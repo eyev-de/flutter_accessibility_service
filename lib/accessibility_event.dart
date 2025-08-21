@@ -24,7 +24,7 @@ class AccessibilityEvent {
 
   /// the event type.
   /// https://developer.android.com/reference/android/view/accessibility/AccessibilityEvent#getEventType()
-  EventType? eventType;
+  AccessibilityEventType? eventType;
 
   /// Gets the text of this node.
   /// https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo#getText()
@@ -40,7 +40,7 @@ class AccessibilityEvent {
 
   /// the type of the window
   /// https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo#getType()
-  WindowType? windowType;
+  AccessibilityWindowType? windowType;
 
   /// check if this window is active. An active window is the one the user is currently touching or the window has input focus and the user is not touching any window.
   /// https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo#isActive()
@@ -111,28 +111,20 @@ class AccessibilityEvent {
   AccessibilityEvent.fromMap(Map<dynamic, dynamic> map) {
     mapId = map['mapId'];
     nodeId = map['nodeId'];
-    actionType = NodeAction.values
-            .firstWhereOrNull((element) => element.id == map['actionType']) ??
-        NodeAction.unknown;
+    actionType = NodeAction.values.firstWhereOrNull((element) => element.id == map['actionType']) ?? NodeAction.unknown;
     eventTime = DateTime.now();
     packageName = map['packageName'];
     if (map['eventType'] == null) {
       eventType = null;
     } else {
-      eventType = EventType.values
-          .firstWhereOrNull((element) => element.id == map['eventType']);
+      eventType = AccessibilityEventType.values.firstWhereOrNull((element) => element.id == map['eventType']);
     }
     text = map['capturedText'].toString();
     contentChangeTypes = map['contentChangeTypes'] == null
         ? null
-        : (ContentChangeTypes.values.firstWhereOrNull(
-                (element) => element.id == map['contentChangeTypes']) ??
-            ContentChangeTypes.others);
+        : (ContentChangeTypes.values.firstWhereOrNull((element) => element.id == map['contentChangeTypes']) ?? ContentChangeTypes.others);
     movementGranularity = int.tryParse(map['movementGranularity'].toString());
-    windowType = map['windowType'] == null
-        ? null
-        : WindowType.values
-            .firstWhereOrNull((element) => element.id == map['windowType']);
+    windowType = map['windowType'] == null ? null : AccessibilityWindowType.values.firstWhereOrNull((element) => element.id == map['windowType']);
     isActive = map['isActive'];
     isFocused = map['isFocused'];
     isClickable = map['isClickable'];
@@ -142,22 +134,11 @@ class AccessibilityEvent {
     isLongClickable = map['isLongClickable'];
     isEditable = map['isEditable'];
     isPip = map['isPip'];
-    screenBounds = map['screenBounds'] != null
-        ? ScreenBounds.fromMap(map['screenBounds'])
-        : null;
-    subNodes = map['subNodesActions'] != null
-        ? (map['subNodesActions'] as List<dynamic>)
-            .map((e) => AccessibilityEvent.fromMap(e))
-            .toList()
-        : [];
+    screenBounds = map['screenBounds'] != null ? ScreenBounds.fromMap(map['screenBounds']) : null;
+    subNodes = map['subNodesActions'] != null ? (map['subNodesActions'] as List<dynamic>).map((e) => AccessibilityEvent.fromMap(e)).toList() : [];
     actions = map['parentActions'] == null
         ? []
-        : (map['parentActions'] as List<dynamic>)
-            .map((e) =>
-                (NodeAction.values
-                    .firstWhereOrNull((element) => element.id == e)) ??
-                NodeAction.unknown)
-            .toList();
+        : (map['parentActions'] as List<dynamic>).map((e) => (NodeAction.values.firstWhereOrNull((element) => element.id == e)) ?? NodeAction.unknown).toList();
   }
 
   @override

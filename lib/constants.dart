@@ -1,4 +1,4 @@
-enum EventType {
+enum AccessibilityEventType {
   typesAllMask(-1),
   typeAnnouncement(16384),
   typeAssistReadingContext(16777216),
@@ -28,7 +28,7 @@ enum EventType {
 
   final int id;
 
-  const EventType(this.id);
+  const AccessibilityEventType(this.id);
 }
 
 enum ContentChangeTypes {
@@ -47,7 +47,7 @@ enum ContentChangeTypes {
   const ContentChangeTypes(this.id);
 }
 
-enum WindowType {
+enum AccessibilityWindowType {
   typeAccessibilityOverlay(4),
   typeApplication(1),
   typeInputMethod(2),
@@ -56,7 +56,7 @@ enum WindowType {
 
   final int id;
 
-  const WindowType(this.id);
+  const AccessibilityWindowType(this.id);
 }
 
 enum NodeAction {

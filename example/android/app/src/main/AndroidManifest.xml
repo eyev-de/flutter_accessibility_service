@@ -1,8 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="slayer.accessibility.service.flutter_accessibility_service_example">
+    <!-- Permissions for accessibility service persistence -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
     <application android:label="flutter_accessibility_service_example" android:name="${applicationName}" android:icon="@mipmap/ic_launcher">
 
 
-        <service android:name="slayer.accessibility.service.flutter_accessibility_service.AccessibilityListener" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
+        <service 
+            android:name="slayer.accessibility.service.flutter_accessibility_service.AccessibilityListener" 
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" 
+            android:exported="true"
+            android:enabled="true"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
