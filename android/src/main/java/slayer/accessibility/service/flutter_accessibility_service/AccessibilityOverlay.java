@@ -3,6 +3,8 @@ package slayer.accessibility.service.flutter_accessibility_service;
 import android.content.Context;
 import android.graphics.PixelFormat;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -105,15 +107,31 @@ public class AccessibilityOverlay {
     }
     
     public void detachFlutterEngine() {
-        if (flutterView != null) {
-            flutterView.detachFromFlutterEngine();
-            Log.d(TAG, "FlutterEngine detached from overlay: " + overlayId);
+        try {
+            // Clean up message channel first
+            if (messageChannel != null) {
+                try {
+                    messageChannel.setMethodCallHandler(null);
+                } catch (Exception channelE) {
+                    Log.w(TAG, "Error cleaning up message channel: " + channelE.getMessage());
+                }
+                messageChannel = null;
+            }
+            
+            // Detach Flutter view from engine
+            if (flutterView != null) {
+                try {
+                    flutterView.detachFromFlutterEngine();
+                    Log.d(TAG, "FlutterEngine detached from overlay: " + overlayId);
+                } catch (Exception detachE) {
+                    Log.w(TAG, "Error detaching Flutter engine: " + detachE.getMessage());
+                }
+            }
+            
+            this.flutterEngine = null;
+        } catch (Exception e) {
+            Log.e(TAG, "Error during Flutter engine detachment: " + e.getMessage(), e);
         }
-        if (messageChannel != null) {
-            messageChannel.setMethodCallHandler(null);
-            messageChannel = null;
-        }
-        this.flutterEngine = null;
     }
     
     public boolean show() {
@@ -122,14 +140,35 @@ public class AccessibilityOverlay {
         }
         
         try {
+            // Clean up any existing view state before showing
+            if (flutterView.getParent() != null) {
+                Log.w(TAG, "FlutterView already has parent, cleaning up before showing overlay: " + overlayId);
+                try {
+                    windowManager.removeView(flutterView);
+                } catch (Exception cleanupE) {
+                    Log.w(TAG, "Error during cleanup before show: " + cleanupE.getMessage());
+                }
+            }
+            
             setupTouchHandling();
             windowManager.addView(flutterView, layoutParams);
             isVisible = true;
             lastUpdated = System.currentTimeMillis();
+            
+            // Ensure accessibility state is properly updated
+            try {
+                if (flutterView != null && flutterView.getContext() != null) {
+                    flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+                }
+            } catch (Exception accessibilityE) {
+                Log.w(TAG, "Error updating accessibility state on show: " + accessibilityE.getMessage());
+            }
+            
             Log.d(TAG, "Overlay shown: " + overlayId);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error showing overlay: " + e.getMessage(), e);
+            isVisible = false; // Reset state on failure
             return false;
         }
     }
@@ -140,11 +179,32 @@ public class AccessibilityOverlay {
         }
         
         try {
-            windowManager.removeView(flutterView);
+            // Clear accessibility state before hiding
+            try {
+                if (flutterView != null && flutterView.getContext() != null) {
+                    // Notify accessibility service that window is being hidden
+                    flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+                }
+            } catch (Exception accessibilityE) {
+                Log.w(TAG, "Error clearing accessibility state on hide: " + accessibilityE.getMessage());
+            }
+            
+            // Check if view is actually attached before trying to remove
+            if (flutterView.getParent() != null) {
+                windowManager.removeView(flutterView);
+            } else {
+                Log.w(TAG, "FlutterView has no parent, skipping removeView for overlay: " + overlayId);
+            }
+            
             isVisible = false;
             lastUpdated = System.currentTimeMillis();
             Log.d(TAG, "Overlay hidden: " + overlayId);
             return true;
+        } catch (IllegalArgumentException e) {
+            // This can happen if view was not attached to window manager
+            Log.w(TAG, "View not attached to window manager during hide: " + e.getMessage());
+            isVisible = false;
+            return true; // Consider this successful since view is effectively hidden
         } catch (Exception e) {
             Log.e(TAG, "Error hiding overlay: " + e.getMessage(), e);
             isVisible = false; // Reset flag even if removal failed
@@ -160,8 +220,26 @@ public class AccessibilityOverlay {
             layoutParams.y = y;
             
             if (isVisible && windowManager != null && flutterView != null) {
-                windowManager.updateViewLayout(flutterView, layoutParams);
-                Log.d(TAG, "WindowManager.updateViewLayout called for overlay: " + overlayId);
+                // Check if view is still attached before updating
+                if (flutterView.getParent() != null) {
+                    try {
+                        windowManager.updateViewLayout(flutterView, layoutParams);
+                        Log.d(TAG, "WindowManager.updateViewLayout called for overlay: " + overlayId);
+                    } catch (IllegalArgumentException e) {
+                        Log.w(TAG, "View not attached during position update, re-adding: " + e.getMessage());
+                        // Try to re-add the view if it became detached
+                        try {
+                            windowManager.addView(flutterView, layoutParams);
+                        } catch (Exception reAddE) {
+                            Log.e(TAG, "Failed to re-add view during position update: " + reAddE.getMessage());
+                            return false;
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "FlutterView has no parent during position update, overlay may have been removed");
+                    isVisible = false; // Update internal state
+                    return false;
+                }
             } else {
                 Log.w(TAG, "Cannot update position - overlay not visible or missing components. " +
                      "isVisible: " + isVisible + ", windowManager: " + (windowManager != null) + 
@@ -183,7 +261,20 @@ public class AccessibilityOverlay {
             layoutParams.height = height;
             
             if (isVisible && windowManager != null && flutterView != null) {
-                windowManager.updateViewLayout(flutterView, layoutParams);
+                // Check if view is still attached before updating
+                if (flutterView.getParent() != null) {
+                    try {
+                        windowManager.updateViewLayout(flutterView, layoutParams);
+                    } catch (IllegalArgumentException e) {
+                        Log.w(TAG, "View not attached during size update: " + e.getMessage());
+                        isVisible = false; // Update internal state
+                        return false;
+                    }
+                } else {
+                    Log.w(TAG, "FlutterView has no parent during size update");
+                    isVisible = false;
+                    return false;
+                }
             }
             
             lastUpdated = System.currentTimeMillis();
@@ -283,8 +374,19 @@ public class AccessibilityOverlay {
                 hide();
             }
             
+            // Ensure view is completely removed
+            try {
+                if (flutterView != null && flutterView.getParent() != null && windowManager != null) {
+                    windowManager.removeView(flutterView);
+                }
+            } catch (Exception viewRemovalE) {
+                Log.w(TAG, "Error ensuring view removal during destroy: " + viewRemovalE.getMessage());
+            }
+            
+            // Clean up Flutter engine attachment
             detachFlutterEngine();
             
+            // Clear view reference
             if (flutterView != null) {
                 flutterView = null;
             }

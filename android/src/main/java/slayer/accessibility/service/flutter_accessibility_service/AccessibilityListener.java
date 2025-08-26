@@ -63,7 +63,7 @@ public class AccessibilityListener extends AccessibilityService {
     private static final ConcurrentHashMap<Integer, ConcurrentLinkedQueue<String>> messageQueues = new ConcurrentHashMap<>();
     private static final String MESSAGE_INTENT = "ACCESSIBILITY_MESSAGE";
     private static volatile boolean isMainAppListening = false;
-
+    
     public static AccessibilityNodeInfo getNodeInfo(String id) {
         return nodeMap.get(id);
     }
@@ -476,28 +476,45 @@ public class AccessibilityListener extends AccessibilityService {
     }
 
     public static boolean showOverlayById(int overlayId) {
-        AccessibilityOverlay overlay = activeOverlays.get(overlayId);
-        if (overlay != null) {
-            return overlay.show();
+        try {
+            AccessibilityOverlay overlay = activeOverlays.get(overlayId);
+            if (overlay != null) {
+                boolean result = overlay.show();
+                return result;
+            }
+            return false;
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error showing overlay " + overlayId + ": " + e.getMessage(), e);
+            return false;
         }
-        return false;
     }
 
     public static boolean hideOverlayById(int overlayId) {
-        AccessibilityOverlay overlay = activeOverlays.get(overlayId);
-        if (overlay != null) {
-            return overlay.hide();
+        try {
+            AccessibilityOverlay overlay = activeOverlays.get(overlayId);
+            if (overlay != null) {
+                boolean result = overlay.hide();
+                return result;
+            }
+            return false;
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error hiding overlay " + overlayId + ": " + e.getMessage(), e);
+            return false;
         }
-        return false;
     }
 
     public static boolean removeOverlayById(int overlayId) {
-        AccessibilityOverlay overlay = activeOverlays.remove(overlayId);
-        if (overlay != null) {
-            overlay.destroy();
-            return true;
+        try {
+            AccessibilityOverlay overlay = activeOverlays.remove(overlayId);
+            if (overlay != null) {
+                overlay.destroy();
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error removing overlay " + overlayId + ": " + e.getMessage(), e);
+            return false;
         }
-        return false;
     }
 
     public static boolean moveOverlayById(int overlayId, int x, int y) {
