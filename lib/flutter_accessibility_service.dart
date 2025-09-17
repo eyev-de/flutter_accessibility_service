@@ -190,7 +190,6 @@ class FlutterAccessibilityService {
   /// Set method handler for receiving messages in overlays
   /// This allows overlays to receive messages with source index information
   static void setMethodHandler(Future<dynamic> Function(MethodCall call, int fromIndex)? handler) {
-    print('Setting method handler for overlays');
     if (handler == null) {
       _overlayMessageChannel.setMethodCallHandler(null);
       return;
@@ -205,7 +204,7 @@ class FlutterAccessibilityService {
           return result;
         }
       } catch (e) {
-        log('Error in method handler: $e');
+        print('Error in method handler: $e');
         return null;
       }
       return null;
@@ -246,24 +245,6 @@ class FlutterAccessibilityService {
           false;
     } on PlatformException catch (error) {
       log("Error sending message: $error");
-      return false;
-    }
-  }
-
-  /// Register as a message listener for a specific index
-  /// This should be called when an overlay is created or the main app starts
-  ///
-  /// Parameters:
-  /// - [targetIndex]: Index to register for (0 = main app, overlay ID = overlay)
-  static Future<bool> registerMessageListener(int targetIndex) async {
-    try {
-      return await _methodChannel.invokeMethod<bool>(
-            'registerMessageListener',
-            {'targetIndex': targetIndex},
-          ) ??
-          false;
-    } on PlatformException catch (error) {
-      log("Error registering message listener: $error");
       return false;
     }
   }

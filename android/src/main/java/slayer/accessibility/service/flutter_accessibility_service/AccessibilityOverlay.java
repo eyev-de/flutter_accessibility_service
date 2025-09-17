@@ -531,9 +531,6 @@ public class AccessibilityOverlay {
                 }
             });
             
-            // Register this overlay as a message listener
-            AccessibilityListener.registerOverlayListener(overlayId);
-            
             Log.d(TAG, "Message channel set up for overlay: " + overlayId);
         } catch (Exception e) {
             Log.e(TAG, "Error setting up message channel for overlay " + overlayId + ": " + e.getMessage(), e);

@@ -305,7 +305,6 @@ public class AccessibilityListener extends AccessibilityService {
         super.onDestroy();
         removeOverlay();
         removeAllOverlays();
-        clearAllMessageQueues();
         serviceInstance = null;
         SharedPreferences sharedPreferences = getSharedPreferences(SHARED_PREFS_TAG, MODE_PRIVATE);
         SharedPreferences.Editor editor = sharedPreferences.edit();
@@ -649,10 +648,7 @@ public class AccessibilityListener extends AccessibilityService {
                 }
             }
             
-            // Fallback: queue the message if main app is not listening
-            getOrCreateMessageQueue(0).offer(jsonMessage);
-            Log.d("MessageRouter", "Message queued for main app");
-            return true;
+            return false;
             
         } catch (Exception e) {
             Log.e("MessageRouter", "Error sending message to main app: " + e.getMessage(), e);
@@ -674,7 +670,6 @@ public class AccessibilityListener extends AccessibilityService {
         AccessibilityOverlay overlay = activeOverlays.get(overlayId);
         if (overlay == null) {
             Log.w("MessageRouter", "Overlay " + overlayId + " not found, queuing message");
-            getOrCreateMessageQueue(overlayId).offer(jsonMessage);
             return false;
         }
         
@@ -683,16 +678,12 @@ public class AccessibilityListener extends AccessibilityService {
             if (deliverMessageToOverlayEngine(overlay, jsonMessage, fromIndex)) {
                 Log.d("MessageRouter", "Message delivered directly to overlay " + overlayId);
                 return true;
-            } else {
-                // Queue the message for later delivery
-                getOrCreateMessageQueue(overlayId).offer(jsonMessage);
-                Log.d("MessageRouter", "Message queued for overlay " + overlayId);
-                return true;
             }
         } catch (Exception e) {
             Log.e("MessageRouter", "Error sending message to overlay " + overlayId + ": " + e.getMessage(), e);
             return false;
         }
+        return false;
     }
     
     /**
@@ -702,56 +693,6 @@ public class AccessibilityListener extends AccessibilityService {
         return overlay.sendMessage(jsonMessage, fromIndex);
     }
     
-    /**
-     * Get or create message queue for a target index
-     */
-    private static ConcurrentLinkedQueue<String> getOrCreateMessageQueue(int targetIndex) {
-        return messageQueues.computeIfAbsent(targetIndex, k -> new ConcurrentLinkedQueue<>());
-    }
-    
-    /**
-     * Get pending messages for a target index
-     */
-    public static List<String> getPendingMessages(int targetIndex) {
-        ConcurrentLinkedQueue<String> queue = messageQueues.get(targetIndex);
-        if (queue == null || queue.isEmpty()) {
-            return new ArrayList<>();
-        }
-        
-        List<String> messages = new ArrayList<>();
-        String message;
-        while ((message = queue.poll()) != null) {
-            messages.add(message);
-        }
-        
-        Log.d("MessageRouter", "Retrieved " + messages.size() + " pending messages for index " + targetIndex);
-        return messages;
-    }
-    
-    /**
-     * Register main app as message listener
-     */
-    public static void registerMainAppListener() {
-        isMainAppListening = true;
-        Log.d("MessageRouter", "Main app registered as message listener");
-    }
-    
-    /**
-     * Unregister main app as message listener
-     */
-    public static void unregisterMainAppListener() {
-        isMainAppListening = false;
-        Log.d("MessageRouter", "Main app unregistered as message listener");
-    }
-    
-    /**
-     * Register overlay as message listener
-     */
-    public static void registerOverlayListener(int overlayId) {
-        // Ensure message queue exists
-        getOrCreateMessageQueue(overlayId);
-        Log.d("MessageRouter", "Overlay " + overlayId + " registered as message listener");
-    }
     
     /**
      * Get current overlay context (used for determining source index)
@@ -767,14 +708,6 @@ public class AccessibilityListener extends AccessibilityService {
      */
     private static AccessibilityListener getCurrentServiceInstance() {
         return serviceInstance;
-    }
-    
-    /**
-     * Clear all message queues
-     */
-    public static void clearAllMessageQueues() {
-        messageQueues.clear();
-        Log.d("MessageRouter", "All message queues cleared");
     }
 
 }

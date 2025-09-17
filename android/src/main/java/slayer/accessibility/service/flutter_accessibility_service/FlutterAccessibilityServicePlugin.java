@@ -271,18 +271,6 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             } else {
                 result.error("INVALID_ARGS", "Target index and message are required", null);
             }
-        } else if (call.method.equals("registerMessageListener")) {
-            Integer targetIndex = call.argument("targetIndex");
-            if (targetIndex != null) {
-                if (targetIndex == 0) {
-                    AccessibilityListener.registerMainAppListener();
-                } else {
-                    AccessibilityListener.registerOverlayListener(targetIndex);
-                }
-                result.success(true);
-            } else {
-                result.error("INVALID_ARGS", "Target index is required", null);
-            }
         } else {
             result.notImplemented();
         }
@@ -301,7 +289,6 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             context.unregisterReceiver(messageReceiver);
             isMessageReceiverRegistered = false;
         }
-        AccessibilityListener.unregisterMainAppListener();
     }
 
     @SuppressLint({"WrongConstant", "UnspecifiedRegisterReceiverFlag"})
@@ -408,9 +395,6 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                     context.registerReceiver(messageReceiver, messageFilter);
                 }
                 isMessageReceiverRegistered = true;
-
-                // Register as main app listener
-                AccessibilityListener.registerMainAppListener();
                 
                 Log.i("MessageStreamHandler", "Message stream handler initialized");
             }
@@ -423,7 +407,6 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                 messageReceiver = null;
                 isMessageReceiverRegistered = false;
             }
-            AccessibilityListener.unregisterMainAppListener();
         }
     }
 

@@ -99,7 +99,7 @@ class _OverlayWidgetState extends State<OverlayWidget> {
             ),
             if (receivedMessages.isNotEmpty) ...[
               const SizedBox(height: 4),
-              ...receivedMessages.take(2).map((msg) => Text(
+              ...receivedMessages.take(5).map((msg) => Text(
                     msg.length > 30 ? '${msg.substring(0, 30)}...' : msg,
                     style: const TextStyle(color: Colors.white70, fontSize: 10),
                   )),
@@ -193,9 +193,6 @@ class _MyAppState extends State<MyApp> {
 
   Future<void> setupMessageListener() async {
     try {
-      // Register main app as message listener (index 0)
-      await FlutterAccessibilityService.registerMessageListener(0);
-
       // Listen for incoming messages
       _messageSubscription = FlutterAccessibilityService.messageStream.listen((messageData) {
         log('Message received: $messageData');
