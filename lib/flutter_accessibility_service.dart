@@ -190,22 +190,28 @@ class FlutterAccessibilityService {
   /// Set method handler for receiving messages in overlays
   /// This allows overlays to receive messages with source index information
   static void setMethodHandler(Future<dynamic> Function(MethodCall call, int fromIndex)? handler) {
+    print('Setting method handler for overlays');
     if (handler == null) {
       _overlayMessageChannel.setMethodCallHandler(null);
       return;
     }
     _overlayMessageChannel.setMethodCallHandler((call) async {
-      if (call.method == 'receiveMessage') {
-        final data = call.arguments as Map<String, dynamic>;
-        final fromIndex = data['fromIndex'] as int? ?? -1;
-        final message = data['message'];
-        final result = await handler(MethodCall('receiveMessage', message), fromIndex);
-        return result;
+      try {
+        if (call.method == 'receiveMessage') {
+          final data = Map<String, dynamic>.from(call.arguments as Map);
+          final fromIndex = data['fromIndex'] as int? ?? -1;
+          final message = data['message'];
+          final result = await handler(MethodCall('receiveMessage', message), fromIndex);
+          return result;
+        }
+      } catch (e) {
+        log('Error in method handler: $e');
+        return null;
       }
       return null;
     });
   }
-  
+
   /// Send message to target index (for use in overlays)
   /// Similar to desktop multi-window plugin pattern
   static Future<dynamic> invokeMethod(int targetIndex, String method, [dynamic arguments]) {
@@ -221,11 +227,11 @@ class FlutterAccessibilityService {
 
   /// Send a message to a target by index
   /// Index 0 = Main App, Index N = Overlay with ID N
-  /// 
+  ///
   /// Parameters:
   /// - [targetIndex]: 0 for main app, overlay ID for overlays
   /// - [message]: JSON serializable Map containing the message data
-  /// 
+  ///
   /// Returns true if the message was successfully sent/queued
   static Future<bool> sendMessage(int targetIndex, Map<String, dynamic> message) async {
     try {
@@ -244,29 +250,9 @@ class FlutterAccessibilityService {
     }
   }
 
-  /// Get pending messages for the current app/overlay
-  /// This is useful for getting queued messages when starting up
-  /// 
-  /// Parameters:
-  /// - [targetIndex]: Index of the target to get messages for (0 = main app)
-  /// 
-  /// Returns list of pending messages as JSON strings
-  static Future<List<String>> getPendingMessages(int targetIndex) async {
-    try {
-      final List<dynamic>? result = await _methodChannel.invokeMethod<List<dynamic>>(
-        'getPendingMessages',
-        {'targetIndex': targetIndex},
-      );
-      return result?.cast<String>() ?? [];
-    } on PlatformException catch (error) {
-      log("Error getting pending messages: $error");
-      return [];
-    }
-  }
-
   /// Register as a message listener for a specific index
   /// This should be called when an overlay is created or the main app starts
-  /// 
+  ///
   /// Parameters:
   /// - [targetIndex]: Index to register for (0 = main app, overlay ID = overlay)
   static Future<bool> registerMessageListener(int targetIndex) async {

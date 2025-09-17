@@ -38,6 +38,7 @@ class _OverlayWidgetState extends State<OverlayWidget> {
   void setupOverlayMessageListener() {
     // Set up method handler similar to desktop multi-window plugin
     FlutterAccessibilityService.setMethodHandler((call, fromIndex) async {
+      print('Received message: $call.method');
       if (call.method == 'receiveMessage') {
         final message = call.arguments as String;
         setState(() {
@@ -324,11 +325,21 @@ class _MyAppState extends State<MyApp> {
   Future<void> createOverlay() async {
     try {
       // Use incrementing integer IDs to avoid duplicates
+      final displayMetrics = await FlutterAccessibilityService.getDisplayMetrics();
+      int width = displayMetrics != null ? (displayMetrics.widthPixels * 0.3).round() : 300;
+      int height = displayMetrics != null ? (displayMetrics.heightPixels * 0.3).round() : 200;
+      int x = 0;
+      int y = displayMetrics != null ? (displayMetrics.heightPixels).round() - height : 200;
+      if (nextOverlayId == 2) {
+        x = displayMetrics != null ? (displayMetrics.widthPixels * 0.3).round() + 10 : 300;
+      }
       final overlayId = await FlutterAccessibilityService.createOverlay(
         nextOverlayId,
-        options: const OverlayOptions(
-          width: 300,
-          height: 200,
+        options: OverlayOptions(
+          width: width,
+          height: height,
+          x: x,
+          y: y,
           gravity: OverlayGravity.top,
         ),
         entrypoint: 'accessibilityOverlay',

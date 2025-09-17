@@ -87,10 +87,10 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
     public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
-        pendingResult = result;
         if (call.method.equals("isAccessibilityPermissionEnabled")) {
             result.success(Utils.isAccessibilitySettingsOn(context));
         } else if (call.method.equals("requestAccessibilityPermission")) {
+            pendingResult = result;  // Only set pendingResult for async operations
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             mActivity.startActivityForResult(intent, REQUEST_CODE_FOR_ACCESSIBILITY);
         } else if (call.method.equals("getSystemActions")) {
@@ -271,14 +271,6 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             } else {
                 result.error("INVALID_ARGS", "Target index and message are required", null);
             }
-        } else if (call.method.equals("getPendingMessages")) {
-            Integer targetIndex = call.argument("targetIndex");
-            if (targetIndex != null) {
-                List<String> messages = AccessibilityListener.getPendingMessages(targetIndex);
-                result.success(messages);
-            } else {
-                result.error("INVALID_ARGS", "Target index is required", null);
-            }
         } else if (call.method.equals("registerMessageListener")) {
             Integer targetIndex = call.argument("targetIndex");
             if (targetIndex != null) {
@@ -343,12 +335,20 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     @Override
     public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQUEST_CODE_FOR_ACCESSIBILITY) {
-            if (resultCode == Activity.RESULT_OK) {
-                pendingResult.success(true);
-            } else if (resultCode == Activity.RESULT_CANCELED) {
-                pendingResult.success(Utils.isAccessibilitySettingsOn(context));
-            } else {
-                pendingResult.success(false);
+            if (pendingResult != null) {
+                try {
+                    if (resultCode == Activity.RESULT_OK) {
+                        pendingResult.success(true);
+                    } else if (resultCode == Activity.RESULT_CANCELED) {
+                        pendingResult.success(Utils.isAccessibilitySettingsOn(context));
+                    } else {
+                        pendingResult.success(false);
+                    }
+                } catch (Exception e) {
+                    Log.e("AccessibilityPlugin", "Error sending result: " + e.getMessage());
+                } finally {
+                    pendingResult = null;  // Clear to prevent multiple replies
+                }
             }
             return true;
         }
@@ -360,6 +360,7 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         this.mActivity = binding.getActivity();
         binding.addActivityResultListener(this);
         try {
+            Log.d("ENGINE-ERROR", "onAttachedToActivity: " + "Creating new engine group");
             FlutterEngineGroup enn = new FlutterEngineGroup(context);
             DartExecutor.DartEntrypoint dEntry = new DartExecutor.DartEntrypoint(
                     FlutterInjector.instance().flutterLoader().findAppBundlePath(),

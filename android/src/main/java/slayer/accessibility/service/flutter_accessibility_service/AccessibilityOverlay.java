@@ -46,6 +46,13 @@ public class AccessibilityOverlay {
     private final long createdAt;
     private long lastUpdated;
 
+    private final Handler main = new Handler(Looper.getMainLooper());
+
+    private void runOnMain(Runnable r) {
+        if (Looper.myLooper() == Looper.getMainLooper()) r.run();
+        else main.post(r);
+    }
+
     
     public AccessibilityOverlay(Context context, WindowManager windowManager, int overlayId) {
         this.context = context;
@@ -94,43 +101,53 @@ public class AccessibilityOverlay {
     }
     
     public void attachFlutterEngine(FlutterEngine engine, String entrypoint) {
-        this.flutterEngine = engine;
-        this.entrypoint = entrypoint; // Store entrypoint for potential refresh
-        if (flutterView != null) {
-            flutterView.attachToFlutterEngine(engine);
-            
-            // Set up message channel for this overlay
-            setupMessageChannel();
-            
-            Log.d(TAG, "FlutterEngine attached to overlay: " + overlayId + " with entrypoint: " + entrypoint);
+        synchronized (this) {
+            this.flutterEngine = engine;
+            this.entrypoint = entrypoint;
+            runOnMain(() -> {
+                try {
+                    if (flutterView != null && this.flutterEngine != null) {
+                        flutterView.attachToFlutterEngine(this.flutterEngine);
+                        setupMessageChannel();
+                        // Tell Flutter we’re visible/resumed (see #2)
+                        this.flutterEngine.getLifecycleChannel().appIsResumed();
+                        Log.d(TAG, "Engine attached …");
+                    }
+                } catch (Exception e) { 
+                    Log.e(TAG, "Error attaching Flutter engine to overlay: " + e.getMessage(), e); 
+                }
+            });
         }
     }
     
     public void detachFlutterEngine() {
-        try {
-            // Clean up message channel first
-            if (messageChannel != null) {
-                try {
-                    messageChannel.setMethodCallHandler(null);
-                } catch (Exception channelE) {
-                    Log.w(TAG, "Error cleaning up message channel: " + channelE.getMessage());
+        // Synchronize to prevent race conditions with method calls
+        synchronized (this) {
+            try {
+                // Clean up message channel first
+                if (messageChannel != null) {
+                    try {
+                        messageChannel.setMethodCallHandler(null);
+                    } catch (Exception channelE) {
+                        Log.w(TAG, "Error cleaning up message channel: " + channelE.getMessage());
+                    }
+                    messageChannel = null;
                 }
-                messageChannel = null;
-            }
-            
-            // Detach Flutter view from engine
-            if (flutterView != null) {
-                try {
-                    flutterView.detachFromFlutterEngine();
-                    Log.d(TAG, "FlutterEngine detached from overlay: " + overlayId);
-                } catch (Exception detachE) {
-                    Log.w(TAG, "Error detaching Flutter engine: " + detachE.getMessage());
+
+                // Detach Flutter view from engine
+                if (flutterView != null && flutterEngine != null) {
+                    try {
+                        flutterView.detachFromFlutterEngine();
+                        Log.d(TAG, "FlutterEngine detached from overlay: " + overlayId);
+                    } catch (Exception detachE) {
+                        Log.w(TAG, "Error detaching Flutter engine: " + detachE.getMessage());
+                    }
                 }
+
+                this.flutterEngine = null;
+            } catch (Exception e) {
+                Log.e(TAG, "Error during Flutter engine detachment: " + e.getMessage(), e);
             }
-            
-            this.flutterEngine = null;
-        } catch (Exception e) {
-            Log.e(TAG, "Error during Flutter engine detachment: " + e.getMessage(), e);
         }
     }
     

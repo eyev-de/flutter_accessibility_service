@@ -12,6 +12,8 @@ import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.util.LruCache;
 import android.view.Gravity;
@@ -229,7 +231,17 @@ public class AccessibilityListener extends AccessibilityService {
             FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
             if (cachedEngine != null) {
                 Log.d("AccessibilityListener", "Found cached FlutterEngine, attaching to overlay view");
-                mOverlayView.attachToFlutterEngine(cachedEngine);
+                // Ensure we're on the main thread for engine attachment to prevent JNI issues
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    try {
+                        if (mOverlayView != null && cachedEngine != null) {
+                            mOverlayView.attachToFlutterEngine(cachedEngine);
+                            Log.d("AccessibilityListener", "Flutter engine attached successfully");
+                        }
+                    } catch (Exception e) {
+                        Log.e("AccessibilityListener", "Error attaching Flutter engine: " + e.getMessage(), e);
+                    }
+                });
             } else {
                 Log.w("AccessibilityListener", "Cached FlutterEngine not found - overlay functionality may be limited");
                 // Continue without attaching to engine - this prevents the crash
@@ -551,14 +563,14 @@ public class AccessibilityListener extends AccessibilityService {
     }
 
     public static List<Map<String, Object>> getAllOverlaysInfo() {
-        Log.d("AccessibilityListener", "getAllOverlaysInfo called - activeOverlays.size(): " + activeOverlays.size());
+        // Log.d("AccessibilityListener", "getAllOverlaysInfo called - activeOverlays.size(): " + activeOverlays.size());
         List<Map<String, Object>> overlaysInfo = new ArrayList<>();
         for (AccessibilityOverlay overlay : activeOverlays.values()) {
             Map<String, Object> info = overlay.getInfo();
-            Log.d("AccessibilityListener", "Overlay info: " + overlay.getOverlayId() + ", visible: " + overlay.isVisible());
+            //Log.d("AccessibilityListener", "Overlay info: " + overlay.getOverlayId() + ", visible: " + overlay.isVisible());
             overlaysInfo.add(info);
         }
-        Log.d("AccessibilityListener", "Returning " + overlaysInfo.size() + " overlay infos");
+        // Log.d("AccessibilityListener", "Returning " + overlaysInfo.size() + " overlay infos");
         return overlaysInfo;
     }
 
