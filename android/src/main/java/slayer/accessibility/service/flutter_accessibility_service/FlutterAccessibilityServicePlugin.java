@@ -262,14 +262,15 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         } else if (call.method.equals("refreshAllOverlayEngines")) {
             boolean success = AccessibilityListener.refreshAllEngines();
             result.success(success);
-        } else if (call.method.equals("sendMessage")) {
-            Integer targetIndex = call.argument("targetIndex");
-            String message = call.argument("message");
-            if (targetIndex != null && message != null) {
-                boolean success = AccessibilityListener.sendMessage(targetIndex, message);
+        } else if (call.method.equals("invokeMethod")) {
+            Integer targetOverlayId = call.argument("targetOverlayId");
+            String method = call.argument("method");
+            String arguments = call.argument("arguments");
+            if (targetOverlayId != null && arguments != null) {
+                boolean success = AccessibilityListener.sendMessage(targetOverlayId, method, arguments);
                 result.success(success);
             } else {
-                result.error("INVALID_ARGS", "Target index and message are required", null);
+                result.error("INVALID_ARGS", "Target overlay ID and arguments are required", null);
             }
         } else {
             result.notImplemented();
@@ -424,16 +425,17 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         @Override
         public void onReceive(Context context, Intent intent) {
             try {
-                String message = intent.getStringExtra("message");
-                Integer targetIndex = intent.getIntExtra("targetIndex", -1);
-                Integer sourceIndex = intent.getIntExtra("sourceIndex", -1);
+                Integer targetOverlayId = intent.getIntExtra("targetOverlayId", -1);
+                String method = intent.getStringExtra("method");
+                String arguments = intent.getStringExtra("arguments");
+                Integer fromOverlayId = intent.getIntExtra("fromOverlayId", -1);
 
-                if (message != null) {
+                if (arguments != null) {
                     Map<String, Object> messageData = new HashMap<>();
-                    messageData.put("message", message);
-                    messageData.put("targetIndex", targetIndex);
-                    messageData.put("sourceIndex", sourceIndex);
-                    messageData.put("timestamp", System.currentTimeMillis());
+                    messageData.put("targetOverlayId", targetOverlayId);
+                    messageData.put("method", method);
+                    messageData.put("arguments", arguments);
+                    messageData.put("fromOverlayId", fromOverlayId);
 
                     events.success(messageData);
                     Log.d("MessageReceiver", "Message received and forwarded to Flutter");

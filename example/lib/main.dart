@@ -39,7 +39,16 @@ class _OverlayWidgetState extends State<OverlayWidget> {
     // Set up method handler similar to desktop multi-window plugin
     FlutterAccessibilityService.setMethodHandler((call, fromIndex) async {
       print('Received message: $call.method');
-      if (call.method == 'receiveMessage') {
+      if (call.method == 'onGaze') {
+        final message = call.arguments as String;
+        setState(() {
+          receivedMessages.insert(0, 'From $fromIndex: $message');
+          if (receivedMessages.length > 5) {
+            receivedMessages.removeLast();
+          }
+        });
+        return true;
+      } else if (call.method == 'onPositioning') {
         final message = call.arguments as String;
         setState(() {
           receivedMessages.insert(0, 'From $fromIndex: $message');
@@ -57,12 +66,11 @@ class _OverlayWidgetState extends State<OverlayWidget> {
     try {
       messageCount++;
       final message = {
-        'type': 'response',
-        'content': 'Hello from overlay! #$messageCount',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'x': '12312',
+        'y': '12312',
       };
 
-      await FlutterAccessibilityService.invokeMethod(0, 'sendMessage', jsonEncode(message));
+      await FlutterAccessibilityService.invokeMethod(0, 'onGaze', jsonEncode(message));
     } catch (e) {
       log('Error sending message from overlay: $e');
     }
@@ -72,13 +80,12 @@ class _OverlayWidgetState extends State<OverlayWidget> {
     try {
       messageCount++;
       final message = {
-        'type': 'overlay-to-overlay',
-        'content': 'Hello from sibling overlay! #$messageCount',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'x': '12312',
+        'y': '12312',
       };
 
       // Try to send to overlay with ID 2 (assuming this is overlay 1)
-      await FlutterAccessibilityService.invokeMethod(2, 'sendMessage', jsonEncode(message));
+      await FlutterAccessibilityService.invokeMethod(2, 'onGaze', jsonEncode(message));
     } catch (e) {
       log('Error sending message to other overlay: $e');
     }
@@ -197,13 +204,10 @@ class _MyAppState extends State<MyApp> {
       _messageSubscription = FlutterAccessibilityService.messageStream.listen((messageData) {
         log('Message received: $messageData');
         setState(() {
-          final message = messageData['message'] as String?;
-          if (message != null) {
-            receivedMessages.insert(0, 'From ${messageData['sourceIndex']}: $message');
-            // Keep only last 10 messages
-            if (receivedMessages.length > 10) {
-              receivedMessages.removeLast();
-            }
+          receivedMessages.insert(0, '$messageData');
+          // Keep only last 10 messages
+          if (receivedMessages.length > 10) {
+            receivedMessages.removeLast();
           }
         });
       });
@@ -222,12 +226,11 @@ class _MyAppState extends State<MyApp> {
 
     try {
       final message = {
-        'type': 'test',
-        'content': 'Hello from main app!',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'x': '12312',
+        'y': '12312',
       };
 
-      final success = await FlutterAccessibilityService.sendMessage(overlayId, message);
+      final success = await FlutterAccessibilityService.invokeMethod(overlayId, 'onGaze', message);
       log('Message sent to overlay $overlayId: $success');
     } catch (e) {
       log('Error sending message: $e');
@@ -242,14 +245,19 @@ class _MyAppState extends State<MyApp> {
 
     try {
       final message = {
-        'type': 'broadcast',
-        'content': 'Broadcast message from main app!',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'left': {
+          'x': '12312',
+          'y': '12312',
+        },
+        'right': {
+          'x': '12312',
+          'y': '12312',
+        },
       };
 
       // Send to all active overlays
       for (final overlay in activeOverlays) {
-        final success = await FlutterAccessibilityService.sendMessage(overlay.id, message);
+        final success = await FlutterAccessibilityService.invokeMethod(overlay.id, 'onPositioning', message);
         log('Broadcast message sent to overlay ${overlay.id}: $success');
       }
     } catch (e) {

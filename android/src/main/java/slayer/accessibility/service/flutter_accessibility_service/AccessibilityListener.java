@@ -615,27 +615,28 @@ public class AccessibilityListener extends AccessibilityService {
      * Send a message to a specific target by index
      * Index 0 = Main App, Index N = Overlay with ID N
      */
-    public static boolean sendMessage(int targetIndex, String jsonMessage) {
-        Log.d("MessageRouter", "Sending message to index " + targetIndex + ": " + jsonMessage);
+    public static boolean sendMessage(int targetOverlayId, String method, String jsonMessage) {
+        Log.d("MessageRouter", "Sending message to overlay " + targetOverlayId + ": " + jsonMessage);
         
-        if (targetIndex == 0) {
+        if (targetOverlayId == 0) {
             // Send to main app
-            return sendMessageToMainApp(jsonMessage);
+            return sendMessageToMainApp(method, jsonMessage);
         } else {
             // Send to overlay
-            return sendMessageToOverlay(targetIndex, jsonMessage);
+            return sendMessageToOverlay(targetOverlayId, method, jsonMessage);
         }
     }
     
     /**
      * Send message to main app (index 0)
      */
-    private static boolean sendMessageToMainApp(String jsonMessage) {
+    private static boolean sendMessageToMainApp(String method, String jsonMessage) {
         try {
             Intent messageIntent = new Intent(MESSAGE_INTENT);
-            messageIntent.putExtra("message", jsonMessage);
-            messageIntent.putExtra("targetIndex", 0);
-            messageIntent.putExtra("sourceIndex", getCurrentOverlayContext());
+            messageIntent.putExtra("targetOverlayId", 0);
+            messageIntent.putExtra("method", method);
+            messageIntent.putExtra("arguments", jsonMessage);
+            messageIntent.putExtra("fromOverlayId", getCurrentOverlayContext());
             
             // Get the service instance context
             if (mWindowManager != null) {
@@ -659,14 +660,14 @@ public class AccessibilityListener extends AccessibilityService {
     /**
      * Send message to overlay
      */
-    private static boolean sendMessageToOverlay(int overlayId, String jsonMessage) {
-        return sendMessageToOverlay(overlayId, jsonMessage, -1); // Default unknown source
+    private static boolean sendMessageToOverlay(int overlayId, String method, String jsonMessage) {
+        return sendMessageToOverlay(overlayId, method, jsonMessage, -1); // Default unknown source
     }
     
     /**
      * Send message to overlay with source index
      */
-    private static boolean sendMessageToOverlay(int overlayId, String jsonMessage, int fromIndex) {
+    private static boolean sendMessageToOverlay(int overlayId, String method, String jsonMessage, int fromOverlayId) {
         AccessibilityOverlay overlay = activeOverlays.get(overlayId);
         if (overlay == null) {
             Log.w("MessageRouter", "Overlay " + overlayId + " not found, queuing message");
@@ -675,7 +676,7 @@ public class AccessibilityListener extends AccessibilityService {
         
         try {
             // Try to deliver directly to overlay's Flutter engine
-            if (deliverMessageToOverlayEngine(overlay, jsonMessage, fromIndex)) {
+            if (deliverMessageToOverlayEngine(overlay, method, jsonMessage, fromOverlayId)) {
                 Log.d("MessageRouter", "Message delivered directly to overlay " + overlayId);
                 return true;
             }
@@ -689,8 +690,8 @@ public class AccessibilityListener extends AccessibilityService {
     /**
      * Deliver message directly to overlay's Flutter engine with source index
      */
-    private static boolean deliverMessageToOverlayEngine(AccessibilityOverlay overlay, String jsonMessage, int fromIndex) {
-        return overlay.sendMessage(jsonMessage, fromIndex);
+    private static boolean deliverMessageToOverlayEngine(AccessibilityOverlay overlay, String method, String jsonMessage, int fromOverlayId) {
+        return overlay.sendMessage(method, jsonMessage, fromOverlayId);
     }
     
     

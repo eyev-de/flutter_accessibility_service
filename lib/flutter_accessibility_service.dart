@@ -189,7 +189,7 @@ class FlutterAccessibilityService {
 
   /// Set method handler for receiving messages in overlays
   /// This allows overlays to receive messages with source index information
-  static void setMethodHandler(Future<dynamic> Function(MethodCall call, int fromIndex)? handler) {
+  static void setMethodHandler(Future<dynamic> Function(MethodCall call, int fromOverlayId)? handler) {
     if (handler == null) {
       _overlayMessageChannel.setMethodCallHandler(null);
       return;
@@ -198,9 +198,10 @@ class FlutterAccessibilityService {
       try {
         if (call.method == 'receiveMessage') {
           final data = Map<String, dynamic>.from(call.arguments as Map);
-          final fromIndex = data['fromIndex'] as int? ?? -1;
-          final message = data['message'];
-          final result = await handler(MethodCall('receiveMessage', message), fromIndex);
+          final fromOverlayId = data['fromOverlayId'] as int? ?? -1;
+          final message = data['arguments'];
+          final method = data['method'];
+          final result = await handler(MethodCall(method, message), fromOverlayId);
           return result;
         }
       } catch (e) {
@@ -208,15 +209,6 @@ class FlutterAccessibilityService {
         return null;
       }
       return null;
-    });
-  }
-
-  /// Send message to target index (for use in overlays)
-  /// Similar to desktop multi-window plugin pattern
-  static Future<dynamic> invokeMethod(int targetIndex, String method, [dynamic arguments]) {
-    return _overlayMessageChannel.invokeMethod(method, <String, dynamic>{
-      'targetIndex': targetIndex,
-      'message': arguments,
     });
   }
 
@@ -232,17 +224,16 @@ class FlutterAccessibilityService {
   /// - [message]: JSON serializable Map containing the message data
   ///
   /// Returns true if the message was successfully sent/queued
-  static Future<bool> sendMessage(int targetIndex, Map<String, dynamic> message) async {
+  static Future<dynamic> invokeMethod(int targetOverlayId, String method, [dynamic arguments]) async {
     try {
-      final String jsonMessage = jsonEncode(message);
-      return await _methodChannel.invokeMethod<bool>(
-            'sendMessage',
-            {
-              'targetIndex': targetIndex,
-              'message': jsonMessage,
-            },
-          ) ??
-          false;
+      return await _methodChannel.invokeMethod(
+        'invokeMethod',
+        {
+          'targetOverlayId': targetOverlayId,
+          'method': method,
+          'arguments': jsonEncode(arguments),
+        },
+      );
     } on PlatformException catch (error) {
       log("Error sending message: $error");
       return false;
