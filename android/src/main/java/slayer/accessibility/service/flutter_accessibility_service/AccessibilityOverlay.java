@@ -241,7 +241,7 @@ public class AccessibilityOverlay {
                 if (flutterView.getParent() != null) {
                     try {
                         windowManager.updateViewLayout(flutterView, layoutParams);
-                        Log.d(TAG, "WindowManager.updateViewLayout called for overlay: " + overlayId);
+                        // Log.d(TAG, "WindowManager.updateViewLayout called for overlay: " + overlayId);
                     } catch (IllegalArgumentException e) {
                         Log.w(TAG, "View not attached during position update, re-adding: " + e.getMessage());
                         // Try to re-add the view if it became detached
@@ -264,7 +264,7 @@ public class AccessibilityOverlay {
             }
             
             lastUpdated = System.currentTimeMillis();
-            Log.d(TAG, "Overlay position updated: " + overlayId + " -> (" + x + ", " + y + ")");
+            // Log.d(TAG, "Overlay position updated: " + overlayId + " -> (" + x + ", " + y + ")");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error updating overlay position: " + e.getMessage(), e);
@@ -554,7 +554,7 @@ public class AccessibilityOverlay {
             messageData.put("arguments", jsonMessage);
             
             messageChannel.invokeMethod("receiveMessage", messageData);
-            Log.d(TAG, "Message sent to overlay " + overlayId + " from " + fromOverlayId + ": " + jsonMessage);
+            // Log.d(TAG, "Message sent to overlay " + overlayId + " from " + fromOverlayId + ": " + jsonMessage);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error sending message to overlay " + overlayId + ": " + e.getMessage(), e);

@@ -616,7 +616,7 @@ public class AccessibilityListener extends AccessibilityService {
      * Index 0 = Main App, Index N = Overlay with ID N
      */
     public static boolean sendMessage(int targetOverlayId, String method, String jsonMessage) {
-        Log.d("MessageRouter", "Sending message to overlay " + targetOverlayId + ": " + jsonMessage);
+        // Log.d("MessageRouter", "Sending message to overlay " + targetOverlayId + ": " + jsonMessage);
         
         if (targetOverlayId == 0) {
             // Send to main app
@@ -644,7 +644,7 @@ public class AccessibilityListener extends AccessibilityService {
                 AccessibilityListener service = getCurrentServiceInstance();
                 if (service != null) {
                     service.sendBroadcast(messageIntent);
-                    Log.d("MessageRouter", "Message sent to main app via broadcast");
+                    // Log.d("MessageRouter", "Message sent to main app via broadcast");
                     return true;
                 }
             }
@@ -677,7 +677,7 @@ public class AccessibilityListener extends AccessibilityService {
         try {
             // Try to deliver directly to overlay's Flutter engine
             if (deliverMessageToOverlayEngine(overlay, method, jsonMessage, fromOverlayId)) {
-                Log.d("MessageRouter", "Message delivered directly to overlay " + overlayId);
+                // Log.d("MessageRouter", "Message delivered directly to overlay " + overlayId);
                 return true;
             }
         } catch (Exception e) {

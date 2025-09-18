@@ -201,7 +201,7 @@ class FlutterAccessibilityService {
           final fromOverlayId = data['fromOverlayId'] as int? ?? -1;
           final message = data['arguments'];
           final method = data['method'];
-          final result = await handler(MethodCall(method, message), fromOverlayId);
+          final result = await handler(MethodCall(method, jsonDecode(message)), fromOverlayId);
           return result;
         }
       } catch (e) {

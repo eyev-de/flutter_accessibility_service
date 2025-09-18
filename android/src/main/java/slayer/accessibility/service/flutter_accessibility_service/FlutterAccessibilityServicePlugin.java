@@ -438,7 +438,6 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                     messageData.put("fromOverlayId", fromOverlayId);
 
                     events.success(messageData);
-                    Log.d("MessageReceiver", "Message received and forwarded to Flutter");
                 }
             } catch (Exception e) {
                 Log.e("MessageReceiver", "Error processing message: " + e.getMessage(), e);
