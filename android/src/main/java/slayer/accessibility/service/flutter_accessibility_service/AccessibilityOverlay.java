@@ -71,7 +71,15 @@ public class AccessibilityOverlay {
             flutterView.setFitsSystemWindows(true);
             flutterView.setFocusable(true);
             flutterView.setFocusableInTouchMode(true);
-            
+
+            // CRITICAL: Disable accessibility for overlay views to prevent ViewParent issues
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                flutterView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                flutterView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
+            }
+
             Log.d(TAG, "FlutterView initialized for overlay: " + overlayId);
         } catch (Exception e) {
             Log.e(TAG, "Error initializing FlutterView: " + e.getMessage(), e);
@@ -91,8 +99,9 @@ public class AccessibilityOverlay {
         layoutParams.y = 0;
         layoutParams.gravity = Gravity.TOP | Gravity.START;
         
-        // Default flags
+        // Default flags - non-touchable, non-focusable, expandable outside layout
         layoutParams.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
                             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
     }
     
@@ -174,7 +183,7 @@ public class AccessibilityOverlay {
             
             // Ensure accessibility state is properly updated
             try {
-                if (flutterView != null && flutterView.getContext() != null) {
+                if (flutterView != null && flutterView.getContext() != null && flutterView.getParent() != null) {
                     flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
                 }
             } catch (Exception accessibilityE) {
@@ -197,14 +206,14 @@ public class AccessibilityOverlay {
         
         try {
             // Clear accessibility state before hiding
-            try {
-                if (flutterView != null && flutterView.getContext() != null) {
-                    // Notify accessibility service that window is being hidden
-                    flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
-                }
-            } catch (Exception accessibilityE) {
-                Log.w(TAG, "Error clearing accessibility state on hide: " + accessibilityE.getMessage());
-            }
+            // try {
+            //     if (flutterView != null && flutterView.getContext() != null && flutterView.getParent() != null) {
+            //         // Notify accessibility service that window is being hidden
+            //         flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+            //     }
+            // } catch (Exception accessibilityE) {
+            //     Log.w(TAG, "Error clearing accessibility state on hide: " + accessibilityE.getMessage());
+            // }
             
             // Check if view is actually attached before trying to remove
             if (flutterView.getParent() != null) {
@@ -428,7 +437,7 @@ public class AccessibilityOverlay {
             options.put("height", layoutParams.height);
             options.put("x", layoutParams.x);
             options.put("y", layoutParams.y);
-            options.put("gravity", gravityToString(layoutParams.gravity));
+            options.put("gravity", layoutParams.gravity);
             options.put("flags", layoutParams.flags);
         }
         
@@ -454,6 +463,62 @@ public class AccessibilityOverlay {
     }
     
     public void setResizable(boolean resizable) { this.isResizable = resizable; }
+    
+    // Configurable overlay behavior methods
+    public void setTouchable(boolean touchable) {
+        if (layoutParams != null) {
+            if (touchable) {
+                layoutParams.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            } else {
+                layoutParams.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            }
+            updateLayoutParams();
+        }
+    }
+    
+    public void setFocusable(boolean focusable) {
+        if (layoutParams != null) {
+            if (focusable) {
+                layoutParams.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            } else {
+                layoutParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            }
+            updateLayoutParams();
+        }
+    }
+    
+    public void setExpandOutsideLayout(boolean expandOutside) {
+        if (layoutParams != null) {
+            if (expandOutside) {
+                layoutParams.flags |= WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+            } else {
+                layoutParams.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+            }
+            updateLayoutParams();
+        }
+    }
+    
+    public void setWatchOutsideTouch(boolean watchOutside) {
+        if (layoutParams != null) {
+            if (watchOutside) {
+                layoutParams.flags |= WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
+            } else {
+                layoutParams.flags &= ~WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
+            }
+            updateLayoutParams();
+        }
+    }
+    
+    private void updateLayoutParams() {
+        if (isVisible && windowManager != null && flutterView != null) {
+            try {
+                windowManager.updateViewLayout(flutterView, layoutParams);
+                Log.d(TAG, "Updated overlay layout params for overlay: " + overlayId);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to update overlay layout params: " + e.getMessage(), e);
+            }
+        }
+    }
     
     /**
      * Refresh the Flutter engine by creating a new one with the same entrypoint

@@ -11,15 +11,25 @@ class OverlayOptions {
   final bool startHidden;
   final Map<String, dynamic>? extras;
 
+  // Overlay behavior configuration
+  final bool touchable;
+  final bool focusable;
+  final bool expandOutsideLayout;
+  final bool watchOutsideTouch;
+
   const OverlayOptions({
     this.width,
     this.height,
     this.x,
     this.y,
-    this.gravity = OverlayGravity.top,
+    this.gravity = OverlayGravity.topLeft,
     this.title,
     this.startHidden = false,
     this.extras,
+    this.touchable = false, // Default: non-touchable (pass-through)
+    this.focusable = false, // Default: non-focusable
+    this.expandOutsideLayout = true, // Default: can expand outside layout
+    this.watchOutsideTouch = false, // Default: no outside touch detection
   });
 
   /// Copy with new values
@@ -32,6 +42,10 @@ class OverlayOptions {
     String? title,
     bool? startHidden,
     Map<String, dynamic>? extras,
+    bool? touchable,
+    bool? focusable,
+    bool? expandOutsideLayout,
+    bool? watchOutsideTouch,
   }) {
     return OverlayOptions(
       width: width ?? this.width,
@@ -42,6 +56,10 @@ class OverlayOptions {
       title: title ?? this.title,
       startHidden: startHidden ?? this.startHidden,
       extras: extras ?? this.extras,
+      touchable: touchable ?? this.touchable,
+      focusable: focusable ?? this.focusable,
+      expandOutsideLayout: expandOutsideLayout ?? this.expandOutsideLayout,
+      watchOutsideTouch: watchOutsideTouch ?? this.watchOutsideTouch,
     );
   }
 
@@ -52,10 +70,14 @@ class OverlayOptions {
       'height': height,
       'x': x,
       'y': y,
-      'gravity': gravity.name,
+      'gravity': gravity.value,
       'title': title,
       'startHidden': startHidden,
       'extras': extras,
+      'touchable': touchable,
+      'focusable': focusable,
+      'expandOutsideLayout': expandOutsideLayout,
+      'watchOutsideTouch': watchOutsideTouch,
     };
   }
 
@@ -66,16 +88,23 @@ class OverlayOptions {
       height: (json['height'] as int?),
       x: (json['x'] as int?),
       y: (json['y'] as int?),
-      gravity: OverlayGravity.values.byName(json['gravity']?.toString() ?? 'top'),
+      gravity: OverlayGravity.values.firstWhere(
+        (g) => g.value == (json['gravity'] as int? ?? 48),
+        orElse: () => OverlayGravity.top,
+      ),
       title: json['title']?.toString(),
       startHidden: json['startHidden'] as bool? ?? false,
       extras: json['extras']?.cast<String, dynamic>(),
+      touchable: json['touchable'] as bool? ?? false,
+      focusable: json['focusable'] as bool? ?? false,
+      expandOutsideLayout: json['expandOutsideLayout'] as bool? ?? true,
+      watchOutsideTouch: json['watchOutsideTouch'] as bool? ?? false,
     );
   }
 
   @override
   String toString() {
-    return 'OverlayOptions(size: ${width}x$height, position: ($x, $y), gravity: $gravity)';
+    return 'OverlayOptions(size: ${width}x$height, position: ($x, $y), gravity: $gravity, touchable: $touchable, focusable: $focusable, expandOutside: $expandOutsideLayout, watchOutside: $watchOutsideTouch)';
   }
 }
 

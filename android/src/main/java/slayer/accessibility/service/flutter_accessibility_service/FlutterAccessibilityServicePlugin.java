@@ -272,6 +272,49 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             } else {
                 result.error("INVALID_ARGS", "Target overlay ID and arguments are required", null);
             }
+        } else if (call.method.equals("click")) {
+            Double x = call.argument("x");
+            Double y = call.argument("y");
+            if (Utils.isAccessibilitySettingsOn(context)) {
+                final Intent i = new Intent(context, AccessibilityListener.class);
+                i.putExtra(INTENT_CLICK, true);  // Fixed: use INTENT_CLICK instead of INTENT_GLOBAL_ACTION
+                i.putExtra(INTENT_CLICK_X, x);
+                i.putExtra(INTENT_CLICK_Y, y);
+                context.startService(i);
+                result.success(true);
+            } else {
+                result.success(false);
+            }
+        } else if (call.method.equals("longPress")) {
+            Double x = call.argument("x");
+            Double y = call.argument("y");
+            if (Utils.isAccessibilitySettingsOn(context)) {
+                final Intent i = new Intent(context, AccessibilityListener.class);
+                i.putExtra(INTENT_LONG_PRESS, true);
+                i.putExtra(INTENT_LONG_PRESS_X, x);
+                i.putExtra(INTENT_LONG_PRESS_Y, y);
+                context.startService(i);
+                result.success(true);
+            } else {
+                result.success(false);
+            }
+        } else if (call.method.equals("scroll")) {
+            Double x = call.argument("x");
+            Double y = call.argument("y");
+            Double deltaX = call.argument("deltaX");
+            Double deltaY = call.argument("deltaY");
+            if (Utils.isAccessibilitySettingsOn(context)) {
+                final Intent i = new Intent(context, AccessibilityListener.class);
+                i.putExtra(INTENT_SCROLL, true);
+                i.putExtra(INTENT_SCROLL_X, x);
+                i.putExtra(INTENT_SCROLL_Y, y);
+                i.putExtra(INTENT_SCROLL_DELTA_X, deltaX);
+                i.putExtra(INTENT_SCROLL_DELTA_Y, deltaY);
+                context.startService(i);
+                result.success(true);
+            } else {
+                result.success(false);
+            }
         } else {
             result.notImplemented();
         }

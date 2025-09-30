@@ -4,6 +4,7 @@ import static slayer.accessibility.service.flutter_accessibility_service.Constan
 import static slayer.accessibility.service.flutter_accessibility_service.FlutterAccessibilityServicePlugin.CACHED_TAG;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.Intent;
@@ -11,6 +12,7 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.Path;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -74,19 +76,40 @@ public class AccessibilityListener extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent accessibilityEvent) {
         try {
+            if (accessibilityEvent == null) {
+                return;
+            }
+
             final int eventType = accessibilityEvent.getEventType();
             AccessibilityNodeInfo parentNodeInfo = accessibilityEvent.getSource();
+
+            // Add comprehensive null checks
+            if (parentNodeInfo == null) {
+                return;
+            }
+
+            // Check if the node is still valid and attached to a window
+            if (parentNodeInfo.getParent() == null && parentNodeInfo.getWindow() == null) {
+                Log.w("AccessibilityListener", "Node has no parent or window, skipping event");
+                return;
+            }
+
             AccessibilityWindowInfo windowInfo = null;
             List<String> nextTexts = new ArrayList<>();
             List<Integer> actions = new ArrayList<>();
             List<HashMap<String, Object>> subNodeActions = new ArrayList<>();
             HashSet<AccessibilityNodeInfo> traversedNodes = new HashSet<>();
             HashMap<String, Object> data = new HashMap<>();
-            if (parentNodeInfo == null) {
+            String nodeId = generateNodeId(parentNodeInfo);
+
+            // Safe package name extraction
+            CharSequence packageNameSeq = parentNodeInfo.getPackageName();
+            if (packageNameSeq == null) {
+                Log.w("AccessibilityListener", "Package name is null, skipping event");
                 return;
             }
-            String nodeId = generateNodeId(parentNodeInfo);
-            String packageName = parentNodeInfo.getPackageName().toString();
+            String packageName = packageNameSeq.toString();
+
             storeNode(nodeId, parentNodeInfo);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 windowInfo = parentNodeInfo.getWindow();
@@ -135,6 +158,16 @@ public class AccessibilityListener extends AccessibilityService {
             storeToSharedPrefs(data);
             intent.putExtra(SEND_BROADCAST, true);
             sendBroadcast(intent);
+        } catch (NullPointerException ex) {
+            // Handle ViewParent null pointer exceptions specifically
+            if (ex.getMessage() != null && ex.getMessage().contains("ViewParent")) {
+                Log.w("EVENT", "ViewParent null pointer exception caught - Flutter view may be detaching: " + ex.getMessage());
+            } else {
+                Log.e("EVENT", "Null pointer exception in accessibility event: " + ex.getMessage());
+            }
+        } catch (IllegalStateException ex) {
+            // Handle cases where accessibility nodes become invalid
+            Log.w("EVENT", "Accessibility node invalid state: " + ex.getMessage());
         } catch (Exception ex) {
             Log.e("EVENT", "onAccessibilityEvent: " + ex.getMessage());
         }
@@ -144,6 +177,9 @@ public class AccessibilityListener extends AccessibilityService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         boolean globalAction = intent.getBooleanExtra(INTENT_GLOBAL_ACTION, false);
         boolean systemActions = intent.getBooleanExtra(INTENT_SYSTEM_GLOBAL_ACTIONS, false);
+        boolean click = intent.getBooleanExtra(INTENT_CLICK, false);
+        boolean longPress = intent.getBooleanExtra(INTENT_LONG_PRESS, false);
+        boolean scroll = intent.getBooleanExtra(INTENT_SCROLL, false);
         if (systemActions && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             List<Integer> actions = getSystemActions().stream().map(AccessibilityNodeInfo.AccessibilityAction::getId).collect(Collectors.toList());
             Intent broadcastIntent = new Intent(BROD_SYSTEM_GLOBAL_ACTIONS);
@@ -153,6 +189,23 @@ public class AccessibilityListener extends AccessibilityService {
         if (globalAction) {
             int actionId = intent.getIntExtra(INTENT_GLOBAL_ACTION_ID, 8);
             performGlobalAction(actionId);
+        }
+        if (click) {
+            double x = intent.getDoubleExtra(INTENT_CLICK_X, 0);
+            double y = intent.getDoubleExtra(INTENT_CLICK_Y, 0);
+            click((float) x, (float) y);
+        }
+        if (longPress) {
+            double x = intent.getDoubleExtra(INTENT_LONG_PRESS_X, 0);
+            double y = intent.getDoubleExtra(INTENT_LONG_PRESS_Y, 0);
+            longPress((float) x, (float) y);
+        }
+        if (scroll) {
+            double x = intent.getDoubleExtra(INTENT_SCROLL_X, 0);
+            double y = intent.getDoubleExtra(INTENT_SCROLL_Y, 0);
+            double deltaX = intent.getDoubleExtra(INTENT_SCROLL_DELTA_X, 0);
+            double deltaY = intent.getDoubleExtra(INTENT_SCROLL_DELTA_Y, 0);
+            scroll((float) x, (float) y, (float) deltaX, (float) deltaY);
         }
         Log.d("CMD_STARTED", "onStartCommand: " + startId);
         return START_STICKY;
@@ -426,7 +479,36 @@ public class AccessibilityListener extends AccessibilityService {
             if (options.containsKey("gravity")) {
                 Integer gravity = safeParseInt(options.get("gravity"));
                 if (gravity != null) {
-                    overlay.updateGravity(convertGravity(gravity));
+                    overlay.updateGravity(gravity);
+                }
+            }
+            
+            // Configurable overlay behavior flags
+            if (options.containsKey("touchable")) {
+                Boolean touchable = safeParseBoolean(options.get("touchable"));
+                if (touchable != null) {
+                    overlay.setTouchable(touchable);
+                }
+            }
+            
+            if (options.containsKey("focusable")) {
+                Boolean focusable = safeParseBoolean(options.get("focusable"));
+                if (focusable != null) {
+                    overlay.setFocusable(focusable);
+                }
+            }
+            
+            if (options.containsKey("expandOutsideLayout")) {
+                Boolean expandOutside = safeParseBoolean(options.get("expandOutsideLayout"));
+                if (expandOutside != null) {
+                    overlay.setExpandOutsideLayout(expandOutside);
+                }
+            }
+            
+            if (options.containsKey("watchOutsideTouch")) {
+                Boolean watchOutside = safeParseBoolean(options.get("watchOutsideTouch"));
+                if (watchOutside != null) {
+                    overlay.setWatchOutsideTouch(watchOutside);
                 }
             }
             
@@ -469,22 +551,39 @@ public class AccessibilityListener extends AccessibilityService {
         return null;
     }
     
+    private static Boolean safeParseBoolean(Object value) {
+        if (value == null) {
+            return null;
+        }
+        
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        
+        if (value instanceof String) {
+            return Boolean.parseBoolean((String) value);
+        }
+        
+        Log.w("AccessibilityListener", "Cannot convert value to boolean, unsupported type: " + value.getClass().getSimpleName());
+        return null;
+    }
+    
     private static int convertGravity(int overlayGravity) {
-        // Convert our overlay gravity constants to Android Gravity constants
+        // Convert overlay gravity values to Android Gravity constants
+        // These values come from OverlayGravity enum in Dart
         switch (overlayGravity) {
-            case 1: return Gravity.TOP | Gravity.START; // topLeft
-            case 2: return Gravity.TOP | Gravity.CENTER_HORIZONTAL; // topCenter
-            case 3: return Gravity.TOP | Gravity.END; // topRight
-            case 4: return Gravity.CENTER_VERTICAL | Gravity.START; // centerLeft
-            case 5: return Gravity.CENTER; // center
-            case 6: return Gravity.CENTER_VERTICAL | Gravity.END; // centerRight
-            case 7: return Gravity.BOTTOM | Gravity.START; // bottomLeft
-            case 8: return Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL; // bottomCenter
-            case 9: return Gravity.BOTTOM | Gravity.END; // bottomRight
-            case 10: return Gravity.TOP | Gravity.START; // custom - use top left as default
-            default: return Gravity.CENTER;
+            case 48: return Gravity.TOP; // top
+            case 80: return Gravity.BOTTOM; // bottom
+            case 3: return Gravity.LEFT; // left
+            case 5: return Gravity.RIGHT; // right
+            case 51: return Gravity.TOP | Gravity.LEFT; // topLeft (48 | 3)
+            case 53: return Gravity.TOP | Gravity.RIGHT; // topRight (48 | 5)
+            case 83: return Gravity.BOTTOM | Gravity.LEFT; // bottomLeft (80 | 3)
+            case 85: return Gravity.BOTTOM | Gravity.RIGHT; // bottomRight (80 | 5)
+            default: return Gravity.TOP; // default to top
         }
     }
+    
 
     public static boolean showOverlayById(int overlayId) {
         try {
@@ -605,6 +704,155 @@ public class AccessibilityListener extends AccessibilityService {
         
         Log.d("AccessibilityListener", "Refresh all engines completed. Success: " + allSuccess);
         return allSuccess;
+    }
+
+    /**
+     * Creates an unblock click stroke for gesture unblocking
+     */
+    private GestureDescription.StrokeDescription createUnblockClickStroke(float posX, float posY) {
+        Path path = new Path();
+        path.moveTo(posX, posY);
+        return new GestureDescription.StrokeDescription(path, 0, 1);
+    }
+    
+    /**
+     * Builds an unblock gesture using multiple quick strokes
+     */
+    private GestureDescription buildUnblockGesture() {
+        return new GestureDescription.Builder()
+            .addStroke(createUnblockClickStroke(1f, 1f))
+            .addStroke(createUnblockClickStroke(1f, 3f))
+            .addStroke(createUnblockClickStroke(2f, 2f))
+            .build();
+    }
+
+    public void click(float x, float y) {
+        try {
+            // Validate coordinates
+            if (x < 0 || y < 0) {
+                Log.w("AccessibilityListener", "Invalid click coordinates: x=" + x + ", y=" + y);
+                return;
+            }
+
+            // Check if service is connected
+            if (serviceInstance == null) {
+                Log.e("AccessibilityListener", "Service not connected - cannot perform click");
+                return;
+            }
+
+            Log.d("AccessibilityListener", "Performing direct click at (" + x + ", " + y + ")");
+
+            // Create a simple, direct click gesture without unblock gestures
+            Path clickPath = new Path();
+            clickPath.moveTo(x, y);
+
+            // Create a standard tap gesture (ViewConfiguration.getTapTimeout() is ~100ms)
+            GestureDescription.StrokeDescription clickStroke = new GestureDescription.StrokeDescription(clickPath, 0, 100);
+            GestureDescription.Builder clickBuilder = new GestureDescription.Builder();
+            clickBuilder.addStroke(clickStroke);
+
+            // Dispatch the gesture with simple callback handling
+            boolean success = dispatchGesture(clickBuilder.build(), new AccessibilityService.GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    Log.d("AccessibilityListener", "Click completed successfully at (" + x + ", " + y + ")");
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    Log.w("AccessibilityListener", "Click gesture was cancelled at (" + x + ", " + y + ")");
+                }
+            }, null);
+
+            if (!success) {
+                Log.w("AccessibilityListener", "Failed to dispatch click gesture at (" + x + ", " + y + ")");
+            }
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error performing click at (" + x + ", " + y + ")", e);
+        }
+    }
+
+    public void longPress(float x, float y) {
+        try {
+            // Validate coordinates
+            if (x < 0 || y < 0) {
+                Log.w("AccessibilityListener", "Invalid long press coordinates: x=" + x + ", y=" + y);
+                return;
+            }
+
+            // Check if service is connected
+            if (serviceInstance == null) {
+                Log.e("AccessibilityListener", "Service not connected - cannot perform long press");
+                return;
+            }
+
+            Log.d("AccessibilityListener", "Performing long press at (" + x + ", " + y + ")");
+
+            // Create a long press gesture
+            Path longPressPath = new Path();
+            longPressPath.moveTo(x, y);
+
+            // Android long press threshold is typically 500ms (ViewConfiguration.getLongPressTimeout())
+            GestureDescription.StrokeDescription longPressStroke = new GestureDescription.StrokeDescription(longPressPath, 0, 500);
+            GestureDescription.Builder longPressBuilder = new GestureDescription.Builder();
+            longPressBuilder.addStroke(longPressStroke);
+
+            // Dispatch the gesture
+            boolean success = dispatchGesture(longPressBuilder.build(), new AccessibilityService.GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    Log.d("AccessibilityListener", "Long press completed successfully at (" + x + ", " + y + ")");
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    Log.w("AccessibilityListener", "Long press gesture was cancelled at (" + x + ", " + y + ")");
+                }
+            }, null);
+
+            if (!success) {
+                Log.w("AccessibilityListener", "Failed to dispatch long press gesture at (" + x + ", " + y + ")");
+            }
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error performing long press at (" + x + ", " + y + ")", e);
+        }
+    }
+
+    public void scroll(float x, float y, float deltaX, float deltaY) {
+        try {
+            // Validate coordinates
+            if (x < 0 || y < 0) {
+                Log.w("AccessibilityListener", "Invalid scroll coordinates: x=" + x + ", y=" + y);
+                return;
+            }
+
+            // Check if service is connected
+            if (serviceInstance == null) {
+                Log.e("AccessibilityListener", "Service not connected - cannot perform scroll");
+                return;
+            }
+
+            Log.d("AccessibilityListener", "Performing scroll at (" + x + ", " + y + ") with delta (" + deltaX + ", " + deltaY + ")");
+
+            // Create scroll gesture path
+            Path scrollPath = new Path();
+            scrollPath.moveTo(x, y);
+            scrollPath.lineTo(x + deltaX, y + deltaY);
+
+            // Very short duration for rapid scroll events (50ms for responsiveness)
+            GestureDescription.StrokeDescription scrollStroke = new GestureDescription.StrokeDescription(scrollPath, 0, 50);
+            GestureDescription.Builder scrollBuilder = new GestureDescription.Builder();
+            scrollBuilder.addStroke(scrollStroke);
+
+            // Dispatch without callback for performance
+            boolean success = dispatchGesture(scrollBuilder.build(), null, null);
+
+            if (!success) {
+                Log.w("AccessibilityListener", "Failed to dispatch scroll gesture at (" + x + ", " + y + ")");
+            }
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error performing scroll at (" + x + ", " + y + ")", e);
+        }
     }
 
     // ============================================================================

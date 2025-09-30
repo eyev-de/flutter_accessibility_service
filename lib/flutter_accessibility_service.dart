@@ -15,8 +15,6 @@ import 'package:flutter_accessibility_service/constants.dart';
 import 'package:flutter_accessibility_service/models/display_info.dart';
 import 'package:flutter_accessibility_service/config/overlay_options.dart';
 
-import 'config/overlay_config.dart';
-
 export 'config/overlay_options.dart';
 export 'flutter_accessibility_service.dart';
 export 'accessibility_event.dart';
@@ -248,12 +246,46 @@ class FlutterAccessibilityService {
   ///
   /// Parameters:
   /// - [id]: Unique integer identifier for the overlay
-  /// - [options]: Configuration options for the overlay
+  /// - [options]: Configuration options for the overlay including:
+  ///   - Size and position (width, height, x, y)
+  ///   - Behavior flags (touchable: false, focusable: false, expandOutsideLayout: true, watchOutsideTouch: false)
+  ///   - Gravity and other display options
   /// - [entrypoint]: Flutter entrypoint function name
   ///
   /// Returns the overlay ID as an integer if successful, null if failed (e.g., duplicate ID)
   /// Note: Each overlay must have a unique integer ID. Creating an overlay with an
   /// existing ID will fail and return null.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Default behavior (non-touchable, non-focusable, expandable)
+  /// final overlayId = await FlutterAccessibilityService.createOverlay(
+  ///   1,
+  ///   options: OverlayOptions(
+  ///     width: 300,
+  ///     height: 200,
+  ///     x: 100,
+  ///     y: 100,
+  ///     // Uses defaults: touchable: false, focusable: false,
+  ///     // expandOutsideLayout: true, watchOutsideTouch: false
+  ///   ),
+  ///   entrypoint: 'overlay_main',
+  /// );
+  ///
+  /// // Custom behavior (touchable and focusable)
+  /// final overlayId2 = await FlutterAccessibilityService.createOverlay(
+  ///   2,
+  ///   options: OverlayOptions(
+  ///     width: 200,
+  ///     height: 150,
+  ///     x: 50,
+  ///     y: 50,
+  ///     touchable: true,            // Override default
+  ///     focusable: true,            // Override default
+  ///   ),
+  ///   entrypoint: 'overlay_main',
+  /// );
+  /// ```
   static Future<int?> createOverlay(
     int id, {
     required OverlayOptions options,
@@ -447,6 +479,90 @@ class FlutterAccessibilityService {
       return await _methodChannel.invokeMethod<bool>('removeAllOverlays') ?? false;
     } on PlatformException catch (error) {
       log("Error removing all overlays: $error");
+      return false;
+    }
+  }
+
+  /// Performs a single tap gesture at the specified coordinates.
+  ///
+  /// This simulates a normal touch tap on the Android screen.
+  /// The tap duration is approximately 100ms (Android standard).
+  ///
+  /// [x] and [y] are the screen coordinates where the tap should occur.
+  ///
+  /// Returns `true` if the accessibility service is enabled and the gesture
+  /// was dispatched successfully, `false` otherwise.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Perform a tap at coordinates (100, 200)
+  /// bool success = await FlutterAccessibilityService.click(100, 200);
+  /// ```
+  static Future<bool> click(double x, double y) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('click', {'x': x, 'y': y}) ?? false;
+    } on PlatformException catch (error) {
+      log("Error clicking: $error");
+      return false;
+    }
+  }
+
+  /// Performs a long press gesture at the specified coordinates.
+  ///
+  /// This is the Android equivalent of a right-click on desktop platforms.
+  /// The long press duration is approximately 500ms (Android standard).
+  ///
+  /// [x] and [y] are the screen coordinates where the long press should occur.
+  ///
+  /// Returns `true` if the accessibility service is enabled and the gesture
+  /// was dispatched successfully, `false` otherwise.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Perform a long press at coordinates (100, 200)
+  /// bool success = await FlutterAccessibilityService.longPress(100, 200);
+  /// ```
+  static Future<bool> longPress(double x, double y) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('longPress', {'x': x, 'y': y}) ?? false;
+    } on PlatformException catch (error) {
+      log("Error performing long press: $error");
+      return false;
+    }
+  }
+
+  /// Performs a scroll gesture using swipe movement.
+  ///
+  /// This simulates a scroll by creating a swipe gesture from the starting point
+  /// to the ending point calculated using the delta values. The gesture duration
+  /// is optimized for rapid scroll events (50ms).
+  ///
+  /// [x] and [y] are the screen coordinates where the scroll should start.
+  /// [deltaX] and [deltaY] define the scroll direction and distance.
+  /// Positive deltaY scrolls down, negative deltaY scrolls up.
+  /// Positive deltaX scrolls right, negative deltaX scrolls left.
+  ///
+  /// Returns `true` if the accessibility service is enabled and the gesture
+  /// was dispatched successfully, `false` otherwise.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Scroll down 100 pixels at coordinates (200, 300)
+  /// bool success = await FlutterAccessibilityService.scroll(200, 300, 0, 100);
+  ///
+  /// // Scroll left 50 pixels at coordinates (200, 300)
+  /// bool success = await FlutterAccessibilityService.scroll(200, 300, -50, 0);
+  /// ```
+  static Future<bool> scroll(double x, double y, double deltaX, double deltaY) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('scroll', {
+        'x': x,
+        'y': y,
+        'deltaX': deltaX,
+        'deltaY': deltaY,
+      }) ?? false;
+    } on PlatformException catch (error) {
+      log("Error performing scroll: $error");
       return false;
     }
   }
