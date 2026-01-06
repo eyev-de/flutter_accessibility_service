@@ -75,102 +75,107 @@ public class AccessibilityListener extends AccessibilityService {
     @RequiresApi(api = Build.VERSION_CODES.N)
     @Override
     public void onAccessibilityEvent(AccessibilityEvent accessibilityEvent) {
-        try {
-            if (accessibilityEvent == null) {
-                return;
-            }
+        // try {
+        //     if (accessibilityEvent == null) {
+        //         return;
+        //     }
 
-            final int eventType = accessibilityEvent.getEventType();
-            AccessibilityNodeInfo parentNodeInfo = accessibilityEvent.getSource();
+        //     final int eventType = accessibilityEvent.getEventType();
+        //     AccessibilityNodeInfo parentNodeInfo = accessibilityEvent.getSource();
 
-            // Add comprehensive null checks
-            if (parentNodeInfo == null) {
-                return;
-            }
+        //     // Add comprehensive null checks
+        //     if (parentNodeInfo == null) {
+        //         return;
+        //     }
 
-            // Check if the node is still valid and attached to a window
-            if (parentNodeInfo.getParent() == null && parentNodeInfo.getWindow() == null) {
-                Log.w("AccessibilityListener", "Node has no parent or window, skipping event");
-                return;
-            }
+        //     // Check if package name is valid first (before checking hierarchy)
+        //     CharSequence packageNameSeq = parentNodeInfo.getPackageName();
+        //     if (packageNameSeq == null) {
+        //         Log.w("AccessibilityListener", "Package name is null, skipping event");
+        //         parentNodeInfo.recycle();
+        //         return;
+        //     }
 
-            AccessibilityWindowInfo windowInfo = null;
-            List<String> nextTexts = new ArrayList<>();
-            List<Integer> actions = new ArrayList<>();
-            List<HashMap<String, Object>> subNodeActions = new ArrayList<>();
-            HashSet<AccessibilityNodeInfo> traversedNodes = new HashSet<>();
-            HashMap<String, Object> data = new HashMap<>();
-            String nodeId = generateNodeId(parentNodeInfo);
+        //     // Check if the node is still valid and attached to a window
+        //     AccessibilityWindowInfo windowInfo = null;
+        //     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        //         windowInfo = parentNodeInfo.getWindow();
+        //     }
 
-            // Safe package name extraction
-            CharSequence packageNameSeq = parentNodeInfo.getPackageName();
-            if (packageNameSeq == null) {
-                Log.w("AccessibilityListener", "Package name is null, skipping event");
-                return;
-            }
-            String packageName = packageNameSeq.toString();
+        //     // Skip events from detached views (likely in transition)
+        //     if (windowInfo == null && parentNodeInfo.getParent() == null) {
+        //         Log.w("AccessibilityListener", "Node has no parent or window, skipping event");
+        //         parentNodeInfo.recycle();
+        //         return;
+        //     }
 
-            storeNode(nodeId, parentNodeInfo);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                windowInfo = parentNodeInfo.getWindow();
-            }
+        //     List<String> nextTexts = new ArrayList<>();
+        //     List<Integer> actions = new ArrayList<>();
+        //     List<HashMap<String, Object>> subNodeActions = new ArrayList<>();
+        //     HashSet<AccessibilityNodeInfo> traversedNodes = new HashSet<>();
+        //     HashMap<String, Object> data = new HashMap<>();
+        //     String nodeId = generateNodeId(parentNodeInfo);
+
+        //     String packageName = packageNameSeq.toString();
+
+        //     storeNode(nodeId, parentNodeInfo);
 
 
-            Intent intent = new Intent(ACCESSIBILITY_INTENT);
+        //     Intent intent = new Intent(ACCESSIBILITY_INTENT);
 
-            data.put("mapId", nodeId);
-            data.put("packageName", packageName);
-            data.put("eventType", eventType);
-            data.put("actionType", accessibilityEvent.getAction());
-            data.put("eventTime", accessibilityEvent.getEventTime());
-            data.put("movementGranularity", accessibilityEvent.getMovementGranularity());
-            Rect rect = new Rect();
-            parentNodeInfo.getBoundsInScreen(rect);
-            data.put("screenBounds", getBoundingPoints(rect));
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                data.put("contentChangeTypes", accessibilityEvent.getContentChangeTypes());
-            }
-            if (parentNodeInfo.getText() != null) {
-                data.put("capturedText", parentNodeInfo.getText().toString());
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-                data.put("nodeId", parentNodeInfo.getViewIdResourceName());
-            }
-            getSubNodes(parentNodeInfo, subNodeActions, traversedNodes, 0);
-            data.put("nodesText", nextTexts);
-            actions.addAll(parentNodeInfo.getActionList().stream().map(AccessibilityNodeInfo.AccessibilityAction::getId).collect(Collectors.toList()));
-            data.put("parentActions", actions);
-            data.put("subNodesActions", subNodeActions);
-            data.put("isClickable", parentNodeInfo.isClickable());
-            data.put("isScrollable", parentNodeInfo.isScrollable());
-            data.put("isFocusable", parentNodeInfo.isFocusable());
-            data.put("isCheckable", parentNodeInfo.isCheckable());
-            data.put("isLongClickable", parentNodeInfo.isLongClickable());
-            data.put("isEditable", parentNodeInfo.isEditable());
-            if (windowInfo != null) {
-                data.put("isActive", windowInfo.isActive());
-                data.put("isFocused", windowInfo.isFocused());
-                data.put("windowType", windowInfo.getType());
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    data.put("isPip", windowInfo.isInPictureInPictureMode());
-                }
-            }
-            storeToSharedPrefs(data);
-            intent.putExtra(SEND_BROADCAST, true);
-            sendBroadcast(intent);
-        } catch (NullPointerException ex) {
-            // Handle ViewParent null pointer exceptions specifically
-            if (ex.getMessage() != null && ex.getMessage().contains("ViewParent")) {
-                Log.w("EVENT", "ViewParent null pointer exception caught - Flutter view may be detaching: " + ex.getMessage());
-            } else {
-                Log.e("EVENT", "Null pointer exception in accessibility event: " + ex.getMessage());
-            }
-        } catch (IllegalStateException ex) {
-            // Handle cases where accessibility nodes become invalid
-            Log.w("EVENT", "Accessibility node invalid state: " + ex.getMessage());
-        } catch (Exception ex) {
-            Log.e("EVENT", "onAccessibilityEvent: " + ex.getMessage());
-        }
+        //     data.put("mapId", nodeId);
+        //     data.put("packageName", packageName);
+        //     data.put("eventType", eventType);
+        //     data.put("actionType", accessibilityEvent.getAction());
+        //     data.put("eventTime", accessibilityEvent.getEventTime());
+        //     data.put("movementGranularity", accessibilityEvent.getMovementGranularity());
+        //     Rect rect = new Rect();
+        //     parentNodeInfo.getBoundsInScreen(rect);
+        //     data.put("screenBounds", getBoundingPoints(rect));
+        //     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+        //         data.put("contentChangeTypes", accessibilityEvent.getContentChangeTypes());
+        //     }
+        //     if (parentNodeInfo.getText() != null) {
+        //         data.put("capturedText", parentNodeInfo.getText().toString());
+        //     }
+        //     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+        //         data.put("nodeId", parentNodeInfo.getViewIdResourceName());
+        //     }
+        //     getSubNodes(parentNodeInfo, subNodeActions, traversedNodes, 0);
+        //     data.put("nodesText", nextTexts);
+        //     actions.addAll(parentNodeInfo.getActionList().stream().map(AccessibilityNodeInfo.AccessibilityAction::getId).collect(Collectors.toList()));
+        //     data.put("parentActions", actions);
+        //     data.put("subNodesActions", subNodeActions);
+        //     data.put("isClickable", parentNodeInfo.isClickable());
+        //     data.put("isScrollable", parentNodeInfo.isScrollable());
+        //     data.put("isFocusable", parentNodeInfo.isFocusable());
+        //     data.put("isCheckable", parentNodeInfo.isCheckable());
+        //     data.put("isLongClickable", parentNodeInfo.isLongClickable());
+        //     data.put("isEditable", parentNodeInfo.isEditable());
+        //     if (windowInfo != null) {
+        //         data.put("isActive", windowInfo.isActive());
+        //         data.put("isFocused", windowInfo.isFocused());
+        //         data.put("windowType", windowInfo.getType());
+        //         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        //             data.put("isPip", windowInfo.isInPictureInPictureMode());
+        //         }
+        //     }
+        //     storeToSharedPrefs(data);
+        //     intent.putExtra(SEND_BROADCAST, true);
+        //     sendBroadcast(intent);
+        // } catch (NullPointerException ex) {
+        //     // Handle ViewParent null pointer exceptions specifically
+        //     if (ex.getMessage() != null && ex.getMessage().contains("ViewParent")) {
+        //         Log.w("EVENT", "ViewParent null pointer exception caught - Flutter view may be detaching: " + ex.getMessage());
+        //     } else {
+        //         Log.e("EVENT", "Null pointer exception in accessibility event: " + ex.getMessage());
+        //     }
+        // } catch (IllegalStateException ex) {
+        //     // Handle cases where accessibility nodes become invalid
+        //     Log.w("EVENT", "Accessibility node invalid state: " + ex.getMessage());
+        // } catch (Exception ex) {
+        //     Log.e("EVENT", "onAccessibilityEvent: " + ex.getMessage());
+        // }
     }
 
     @Override
@@ -215,46 +220,46 @@ public class AccessibilityListener extends AccessibilityService {
     @RequiresApi(api = Build.VERSION_CODES.N)
     @TargetApi(Build.VERSION_CODES.LOLLIPOP)
     void getSubNodes(AccessibilityNodeInfo node, List<HashMap<String, Object>> arr, HashSet<AccessibilityNodeInfo> traversedNodes, int currentDepth) {
-        if (currentDepth >= maximumTreeDepth || node == null) {
-            if (currentDepth >= maximumTreeDepth) {
-                Log.d("TREE_DEPTH", "Maximum tree depth reached: " + currentDepth);
-            }
-            return;
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-            if (traversedNodes.contains(node)) return;
-            traversedNodes.add(node);
-            String mapId = generateNodeId(node);
-            AccessibilityWindowInfo windowInfo = null;
-            HashMap<String, Object> nested = new HashMap<>();
-            Rect rect = new Rect();
-            node.getBoundsInScreen(rect);
-            windowInfo = node.getWindow();
-            nested.put("mapId", mapId);
-            nested.put("nodeId", node.getViewIdResourceName());
-            nested.put("capturedText", node.getText());
-            nested.put("screenBounds", getBoundingPoints(rect));
-            nested.put("isClickable", node.isClickable());
-            nested.put("isScrollable", node.isScrollable());
-            nested.put("isFocusable", node.isFocusable());
-            nested.put("isCheckable", node.isCheckable());
-            nested.put("isLongClickable", node.isLongClickable());
-            nested.put("isEditable", node.isEditable());
-            nested.put("parentActions", node.getActionList().stream().map(AccessibilityNodeInfo.AccessibilityAction::getId).collect(Collectors.toList()));
-            if (windowInfo != null) {
-                nested.put("isActive", node.getWindow().isActive());
-                nested.put("isFocused", node.getWindow().isFocused());
-                nested.put("windowType", node.getWindow().getType());
-            }
-            arr.add(nested);
-            storeNode(mapId, node);
-            for (int i = 0; i < node.getChildCount(); i++) {
-                AccessibilityNodeInfo child = node.getChild(i);
-                if (child == null)
-                    continue;
-                getSubNodes(child, arr, traversedNodes, currentDepth + 1);
-            }
-        }
+        // if (currentDepth >= maximumTreeDepth || node == null) {
+        //     if (currentDepth >= maximumTreeDepth) {
+        //         Log.d("TREE_DEPTH", "Maximum tree depth reached: " + currentDepth);
+        //     }
+        //     return;
+        // }
+        // if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+        //     if (traversedNodes.contains(node)) return;
+        //     traversedNodes.add(node);
+        //     String mapId = generateNodeId(node);
+        //     AccessibilityWindowInfo windowInfo = null;
+        //     HashMap<String, Object> nested = new HashMap<>();
+        //     Rect rect = new Rect();
+        //     node.getBoundsInScreen(rect);
+        //     windowInfo = node.getWindow();
+        //     nested.put("mapId", mapId);
+        //     nested.put("nodeId", node.getViewIdResourceName());
+        //     nested.put("capturedText", node.getText());
+        //     nested.put("screenBounds", getBoundingPoints(rect));
+        //     nested.put("isClickable", node.isClickable());
+        //     nested.put("isScrollable", node.isScrollable());
+        //     nested.put("isFocusable", node.isFocusable());
+        //     nested.put("isCheckable", node.isCheckable());
+        //     nested.put("isLongClickable", node.isLongClickable());
+        //     nested.put("isEditable", node.isEditable());
+        //     nested.put("parentActions", node.getActionList().stream().map(AccessibilityNodeInfo.AccessibilityAction::getId).collect(Collectors.toList()));
+        //     if (windowInfo != null) {
+        //         nested.put("isActive", node.getWindow().isActive());
+        //         nested.put("isFocused", node.getWindow().isFocused());
+        //         nested.put("windowType", node.getWindow().getType());
+        //     }
+        //     arr.add(nested);
+        //     storeNode(mapId, node);
+        //     for (int i = 0; i < node.getChildCount(); i++) {
+        //         AccessibilityNodeInfo child = node.getChild(i);
+        //         if (child == null)
+        //             continue;
+        //         getSubNodes(child, arr, traversedNodes, currentDepth + 1);
+        //     }
+        // }
     }
 
     private HashMap<String, Integer> getBoundingPoints(Rect rect) {
@@ -275,11 +280,26 @@ public class AccessibilityListener extends AccessibilityService {
         try {
             serviceInstance = this;
             mWindowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-            mOverlayView = new FlutterView(getApplicationContext(), new FlutterTextureView(getApplicationContext()));
-            
+
+            // Create texture view and disable accessibility on it first
+            FlutterTextureView textureView = new FlutterTextureView(getApplicationContext());
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                textureView.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            }
+
+            mOverlayView = new FlutterView(getApplicationContext(), textureView);
+
+            // Disable accessibility on the FlutterView too
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                mOverlayView.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                mOverlayView.setAccessibilityLiveRegion(android.view.View.ACCESSIBILITY_LIVE_REGION_NONE);
+            }
+
             // Initialize Flutter engine group for multiple overlays
             engineGroup = new FlutterEngineGroup(getApplicationContext());
-            
+
             // Check if cached FlutterEngine exists before attaching
             FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
             if (cachedEngine != null) {
@@ -300,12 +320,12 @@ public class AccessibilityListener extends AccessibilityService {
                 // Continue without attaching to engine - this prevents the crash
                 // The overlay can still be created but won't have Flutter content
             }
-            
+
             mOverlayView.setFitsSystemWindows(true);
             mOverlayView.setFocusable(true);
             mOverlayView.setFocusableInTouchMode(true);
             mOverlayView.setBackgroundColor(Color.TRANSPARENT);
-            
+
             Log.d("AccessibilityListener", "AccessibilityService connected successfully");
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error in onServiceConnected: " + e.getMessage(), e);
@@ -918,7 +938,7 @@ public class AccessibilityListener extends AccessibilityService {
     private static boolean sendMessageToOverlay(int overlayId, String method, String jsonMessage, int fromOverlayId) {
         AccessibilityOverlay overlay = activeOverlays.get(overlayId);
         if (overlay == null) {
-            Log.w("MessageRouter", "Overlay " + overlayId + " not found, queuing message");
+            // Log.w("MessageRouter", "Overlay " + overlayId + " not found, queuing message");
             return false;
         }
         

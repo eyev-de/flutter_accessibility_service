@@ -556,13 +556,61 @@ class FlutterAccessibilityService {
   static Future<bool> scroll(double x, double y, double deltaX, double deltaY) async {
     try {
       return await _methodChannel.invokeMethod<bool>('scroll', {
-        'x': x,
-        'y': y,
-        'deltaX': deltaX,
-        'deltaY': deltaY,
-      }) ?? false;
+            'x': x,
+            'y': y,
+            'deltaX': deltaX,
+            'deltaY': deltaY,
+          }) ??
+          false;
     } on PlatformException catch (error) {
       log("Error performing scroll: $error");
+      return false;
+    }
+  }
+
+  /// Brings the main app (the app that hosts the accessibility service) to the foreground.
+  ///
+  /// This is useful for opening the main app from an accessibility overlay.
+  /// It uses the app's launch intent with FLAG_ACTIVITY_REORDER_TO_FRONT to bring
+  /// the existing activity to the front rather than creating a new instance.
+  ///
+  /// Returns `true` if the main app was successfully brought to the foreground,
+  /// `false` otherwise.
+  ///
+  /// Example:
+  /// ```dart
+  /// // From an overlay button tap handler:
+  /// await FlutterAccessibilityService.bringMainAppToForeground();
+  /// ```
+  static Future<bool> bringMainAppToForeground() async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('bringMainAppToForeground') ?? false;
+    } on PlatformException catch (error) {
+      log("Error bringing main app to foreground: $error");
+      return false;
+    }
+  }
+
+  /// Launches an app by its package name.
+  ///
+  /// This can be used to open any installed app from an accessibility overlay.
+  ///
+  /// [packageName] is the Android package name of the app to launch
+  /// (e.g., 'com.google.android.youtube').
+  ///
+  /// Returns `true` if the app was successfully launched, `false` if the app
+  /// is not installed or could not be launched.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Launch YouTube
+  /// bool success = await FlutterAccessibilityService.launchApp('com.google.android.youtube');
+  /// ```
+  static Future<bool> launchApp(String packageName) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('launchApp', {'packageName': packageName}) ?? false;
+    } on PlatformException catch (error) {
+      log("Error launching app: $error");
       return false;
     }
   }

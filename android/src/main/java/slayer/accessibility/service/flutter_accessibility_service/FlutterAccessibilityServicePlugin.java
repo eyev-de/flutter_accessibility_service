@@ -315,6 +315,57 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             } else {
                 result.success(false);
             }
+        } else if (call.method.equals("bringMainAppToForeground")) {
+            try {
+                // Use FLAG_ACTIVITY_CLEAR_TOP | FLAG_ACTIVITY_SINGLE_TOP to reuse existing
+                // activity instance without recreating its surface/view hierarchy
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    try {
+                        Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+                        if (launchIntent != null) {
+                            // CLEAR_TOP + SINGLE_TOP: delivers intent to existing instance
+                            // This avoids the surface recreation that causes AccessibilityBridge NPE
+                            launchIntent.setFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK | 
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP |
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            );
+                            
+                            // Add extra to indicate this is a "bring to front" action
+                            // The activity can check this and avoid heavy UI rebuilds
+                            launchIntent.putExtra("BRING_TO_FRONT", true);
+                            
+                            context.startActivity(launchIntent);
+                        }
+                    } catch (Exception e) {
+                        Log.e("AccessibilityPlugin", "Failed to start activity: " + e.getMessage());
+                    }
+                }, 100); // Wait for overlays to fully hide
+                
+                result.success(true);
+            } catch (Exception e) {
+                Log.e("AccessibilityPlugin", "Failed to bring main app to foreground: " + e.getMessage());
+                result.success(false);
+            }
+        } else if (call.method.equals("launchApp")) {
+            String packageName = call.argument("packageName");
+            if (packageName != null && !packageName.isEmpty()) {
+                try {
+                    Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(packageName);
+                    if (launchIntent != null) {
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(launchIntent);
+                        result.success(true);
+                    } else {
+                        result.success(false);
+                    }
+                } catch (Exception e) {
+                    Log.e("AccessibilityPlugin", "Failed to launch app: " + e.getMessage());
+                    result.success(false);
+                }
+            } else {
+                result.error("INVALID_ARGS", "Package name is required", null);
+            }
         } else {
             result.notImplemented();
         }

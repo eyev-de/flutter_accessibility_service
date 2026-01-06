@@ -67,14 +67,21 @@ public class AccessibilityOverlay {
     
     private void initializeView() {
         try {
-            flutterView = new FlutterView(context, new FlutterTextureView(context));
+            FlutterTextureView textureView = new FlutterTextureView(context);
+
+            // CRITICAL: Disable accessibility on the texture view first
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                textureView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            }
+
+            flutterView = new FlutterView(context, textureView);
             flutterView.setFitsSystemWindows(true);
             flutterView.setFocusable(true);
             flutterView.setFocusableInTouchMode(true);
 
             // CRITICAL: Disable accessibility for overlay views to prevent ViewParent issues
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-                flutterView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                flutterView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                 flutterView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
@@ -181,13 +188,19 @@ public class AccessibilityOverlay {
             isVisible = true;
             lastUpdated = System.currentTimeMillis();
             
-            // Ensure accessibility state is properly updated
-            try {
-                if (flutterView != null && flutterView.getContext() != null && flutterView.getParent() != null) {
-                    flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+            // Re-attach Flutter engine if it was detached during hide
+            // and resume its lifecycle to enable semantics updates
+            if (flutterEngine != null && flutterView != null) {
+                try {
+                    // Check if already attached
+                    if (flutterView.getAttachedFlutterEngine() != flutterEngine) {
+                        flutterView.attachToFlutterEngine(flutterEngine);
+                    }
+                    // Resume the engine lifecycle now that the view is properly attached
+                    flutterEngine.getLifecycleChannel().appIsResumed();
+                } catch (Exception attachE) {
+                    Log.w(TAG, "Error re-attaching engine on show: " + attachE.getMessage());
                 }
-            } catch (Exception accessibilityE) {
-                Log.w(TAG, "Error updating accessibility state on show: " + accessibilityE.getMessage());
             }
             
             Log.d(TAG, "Overlay shown: " + overlayId);
@@ -205,15 +218,27 @@ public class AccessibilityOverlay {
         }
         
         try {
-            // Clear accessibility state before hiding
-            // try {
-            //     if (flutterView != null && flutterView.getContext() != null && flutterView.getParent() != null) {
-            //         // Notify accessibility service that window is being hidden
-            //         flutterView.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
-            //     }
-            // } catch (Exception accessibilityE) {
-            //     Log.w(TAG, "Error clearing accessibility state on hide: " + accessibilityE.getMessage());
-            // }
+            // CRITICAL: Pause the Flutter engine's lifecycle BEFORE removing the view
+            // This stops the engine from sending semantics updates while the view is detached
+            // which prevents the AccessibilityBridge NPE crash
+            if (flutterEngine != null) {
+                try {
+                    flutterEngine.getLifecycleChannel().appIsInactive();
+                    flutterEngine.getLifecycleChannel().appIsPaused();
+                } catch (Exception lifecycleE) {
+                    Log.w(TAG, "Error pausing engine lifecycle on hide: " + lifecycleE.getMessage());
+                }
+            }
+            
+            // Detach Flutter view from engine before removing from window
+            // This ensures no accessibility events are sent during transition
+            if (flutterView != null && flutterEngine != null) {
+                try {
+                    flutterView.detachFromFlutterEngine();
+                } catch (Exception detachE) {
+                    Log.w(TAG, "Error detaching from engine on hide: " + detachE.getMessage());
+                }
+            }
             
             // Check if view is actually attached before trying to remove
             if (flutterView.getParent() != null) {
@@ -347,51 +372,51 @@ public class AccessibilityOverlay {
     private void setupTouchHandling() {
         if (flutterView == null) return;
         
-        flutterView.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                if (!isMovable) {
-                    return false; // Let Flutter handle the touch
-                }
+        // flutterView.setOnTouchListener(new View.OnTouchListener() {
+        //     @Override
+        //     public boolean onTouch(View v, MotionEvent event) {
+        //         if (!isMovable) {
+        //             return false; // Let Flutter handle the touch
+        //         }
                 
-                switch (event.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        initialTouchX = event.getRawX();
-                        initialTouchY = event.getRawY();
-                        initialX = layoutParams.x;
-                        initialY = layoutParams.y;
-                        isDragging = false;
-                        return true;
+        //         switch (event.getAction()) {
+        //             case MotionEvent.ACTION_DOWN:
+        //                 initialTouchX = event.getRawX();
+        //                 initialTouchY = event.getRawY();
+        //                 initialX = layoutParams.x;
+        //                 initialY = layoutParams.y;
+        //                 isDragging = false;
+        //                 return true;
                         
-                    case MotionEvent.ACTION_MOVE:
-                        float deltaX = event.getRawX() - initialTouchX;
-                        float deltaY = event.getRawY() - initialTouchY;
+        //             case MotionEvent.ACTION_MOVE:
+        //                 float deltaX = event.getRawX() - initialTouchX;
+        //                 float deltaY = event.getRawY() - initialTouchY;
                         
-                        // Only start dragging after significant movement
-                        if (!isDragging && (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10)) {
-                            isDragging = true;
-                        }
+        //                 // Only start dragging after significant movement
+        //                 if (!isDragging && (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10)) {
+        //                     isDragging = true;
+        //                 }
                         
-                        if (isDragging) {
-                            int newX = initialX + (int) deltaX;
-                            int newY = initialY + (int) deltaY;
-                            updatePosition(newX, newY);
-                            return true;
-                        }
-                        break;
+        //                 if (isDragging) {
+        //                     int newX = initialX + (int) deltaX;
+        //                     int newY = initialY + (int) deltaY;
+        //                     updatePosition(newX, newY);
+        //                     return true;
+        //                 }
+        //                 break;
                         
-                    case MotionEvent.ACTION_UP:
-                        if (!isDragging) {
-                            // This was a tap, let Flutter handle it
-                            return false;
-                        }
-                        isDragging = false;
-                        return true;
-                }
+        //             case MotionEvent.ACTION_UP:
+        //                 if (!isDragging) {
+        //                     // This was a tap, let Flutter handle it
+        //                     return false;
+        //                 }
+        //                 isDragging = false;
+        //                 return true;
+        //         }
                 
-                return false;
-            }
-        });
+        //         return false;
+        //     }
+        // });
     }
     
     public void destroy() {
