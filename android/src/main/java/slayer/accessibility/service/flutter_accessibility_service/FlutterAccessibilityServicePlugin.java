@@ -373,6 +373,45 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
 
     @Override
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
+        Log.d("AccessibilityPlugin", "onDetachedFromEngine: cleaning up overlays and engines");
+        
+        // CRITICAL: Hide and detach all overlays before the engine is destroyed
+        // This prevents AccessibilityBridge NPE during hot restart
+        try {
+            // Hide all active overlays - this will detach them from their engines
+            for (Map<String, Object> info : AccessibilityListener.getAllOverlaysInfo()) {
+                Integer overlayId = (Integer) info.get("id");
+                if (overlayId != null) {
+                    try {
+                        AccessibilityListener.hideOverlayById(overlayId);
+                    } catch (Exception e) {
+                        Log.w("AccessibilityPlugin", "Error hiding overlay " + overlayId + " during detach: " + e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w("AccessibilityPlugin", "Error cleaning up overlays during detach: " + e.getMessage());
+        }
+        
+        // Detach the legacy overlay view from its engine
+        try {
+            AccessibilityListener.detachLegacyOverlayFromEngine();
+        } catch (Exception e) {
+            Log.w("AccessibilityPlugin", "Error detaching legacy overlay: " + e.getMessage());
+        }
+        
+        // Clean up the cached engine to prevent stale references
+        try {
+            FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
+            if (cachedEngine != null) {
+                // Remove from cache first
+                FlutterEngineCache.getInstance().remove(CACHED_TAG);
+                Log.d("AccessibilityPlugin", "Removed cached engine from cache");
+            }
+        } catch (Exception e) {
+            Log.w("AccessibilityPlugin", "Error cleaning up cached engine: " + e.getMessage());
+        }
+        
         channel.setMethodCallHandler(null);
         eventChannel.setStreamHandler(null);
         messageEventChannel.setStreamHandler(null);
@@ -442,7 +481,26 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         this.mActivity = binding.getActivity();
         binding.addActivityResultListener(this);
         try {
-            Log.d("ENGINE-ERROR", "onAttachedToActivity: " + "Creating new engine group");
+            Log.d("AccessibilityPlugin", "onAttachedToActivity: Setting up engine");
+            
+            // Check if there's already a cached engine (from previous session)
+            // and clean it up properly to avoid stale references
+            FlutterEngine existingEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
+            if (existingEngine != null) {
+                Log.d("AccessibilityPlugin", "Found existing cached engine, cleaning up");
+                try {
+                    // Detach legacy overlay first
+                    AccessibilityListener.detachLegacyOverlayFromEngine();
+                    // Remove the old engine from cache
+                    FlutterEngineCache.getInstance().remove(CACHED_TAG);
+                    // Destroy the old engine to release resources
+                    existingEngine.destroy();
+                } catch (Exception cleanupE) {
+                    Log.w("AccessibilityPlugin", "Error cleaning up old engine: " + cleanupE.getMessage());
+                }
+            }
+            
+            // Create new engine group and engine
             FlutterEngineGroup enn = new FlutterEngineGroup(context);
             DartExecutor.DartEntrypoint dEntry = new DartExecutor.DartEntrypoint(
                     FlutterInjector.instance().flutterLoader().findAppBundlePath(),
@@ -450,9 +508,21 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             FlutterEngine engine = enn.createAndRunEngine(context, dEntry);
             FlutterEngineCache.getInstance().put(CACHED_TAG, engine);
             supportOverlay = true;
+            Log.d("AccessibilityPlugin", "New engine created and cached successfully");
+            
+            // Re-attach the legacy overlay to the new engine
+            // Use a small delay to ensure the engine is fully initialized
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    AccessibilityListener.reattachLegacyOverlayToEngine();
+                } catch (Exception e) {
+                    Log.w("AccessibilityPlugin", "Error re-attaching legacy overlay: " + e.getMessage());
+                }
+            }, 100);
+            
         } catch (Exception exception) {
             supportOverlay = false;
-            Log.e("ENGINE-ERROR", "onAttachedToActivity: " + exception.getMessage());
+            Log.e("AccessibilityPlugin", "onAttachedToActivity error: " + exception.getMessage());
         }
     }
 

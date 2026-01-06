@@ -125,9 +125,16 @@ public class AccessibilityOverlay {
                     if (flutterView != null && this.flutterEngine != null) {
                         flutterView.attachToFlutterEngine(this.flutterEngine);
                         setupMessageChannel();
-                        // Tell Flutter we’re visible/resumed (see #2)
-                        this.flutterEngine.getLifecycleChannel().appIsResumed();
-                        Log.d(TAG, "Engine attached …");
+                        // CRITICAL: Only resume the engine if the overlay is visible (view is in window)
+                        // Calling appIsResumed() when the view has no parent causes AccessibilityBridge NPE
+                        if (isVisible && flutterView.getParent() != null) {
+                            this.flutterEngine.getLifecycleChannel().appIsResumed();
+                            Log.d(TAG, "Engine attached and resumed (visible)");
+                        } else {
+                            // Keep engine paused until overlay is shown
+                            this.flutterEngine.getLifecycleChannel().appIsInactive();
+                            Log.d(TAG, "Engine attached but kept inactive (not visible)");
+                        }
                     }
                 } catch (Exception e) { 
                     Log.e(TAG, "Error attaching Flutter engine to overlay: " + e.getMessage(), e); 
@@ -190,17 +197,29 @@ public class AccessibilityOverlay {
             
             // Re-attach Flutter engine if it was detached during hide
             // and resume its lifecycle to enable semantics updates
+            // Use a small delay to ensure the view hierarchy is fully established
+            // This prevents AccessibilityBridge NPE when the view is added but parent isn't set yet
             if (flutterEngine != null && flutterView != null) {
-                try {
-                    // Check if already attached
-                    if (flutterView.getAttachedFlutterEngine() != flutterEngine) {
-                        flutterView.attachToFlutterEngine(flutterEngine);
+                final FlutterEngine engineRef = flutterEngine;
+                final FlutterView viewRef = flutterView;
+                main.postDelayed(() -> {
+                    try {
+                        // Double-check the view is still valid and has a parent
+                        if (viewRef != null && viewRef.getParent() != null && engineRef != null && isVisible) {
+                            // Check if already attached
+                            if (viewRef.getAttachedFlutterEngine() != engineRef) {
+                                viewRef.attachToFlutterEngine(engineRef);
+                            }
+                            // Resume the engine lifecycle now that the view is properly attached
+                            engineRef.getLifecycleChannel().appIsResumed();
+                            Log.d(TAG, "Engine resumed for overlay: " + overlayId);
+                        } else {
+                            Log.w(TAG, "View not ready for engine resume, skipping for overlay: " + overlayId);
+                        }
+                    } catch (Exception attachE) {
+                        Log.w(TAG, "Error re-attaching engine on show: " + attachE.getMessage());
                     }
-                    // Resume the engine lifecycle now that the view is properly attached
-                    flutterEngine.getLifecycleChannel().appIsResumed();
-                } catch (Exception attachE) {
-                    Log.w(TAG, "Error re-attaching engine on show: " + attachE.getMessage());
-                }
+                }, 50); // Small delay to let view hierarchy settle
             }
             
             Log.d(TAG, "Overlay shown: " + overlayId);
