@@ -123,17 +123,21 @@ public class AccessibilityOverlay {
             runOnMain(() -> {
                 try {
                     if (flutterView != null && this.flutterEngine != null) {
-                        flutterView.attachToFlutterEngine(this.flutterEngine);
-                        setupMessageChannel();
-                        // CRITICAL: Only resume the engine if the overlay is visible (view is in window)
-                        // Calling appIsResumed() when the view has no parent causes AccessibilityBridge NPE
+                        // CRITICAL: Only attach view to engine if the view has a parent (is in window)
+                        // Attaching when view has no parent causes AccessibilityBridge NPE crash
+                        // because Flutter tries to send accessibility events but ViewParent is null
                         if (isVisible && flutterView.getParent() != null) {
+                            flutterView.attachToFlutterEngine(this.flutterEngine);
+                            setupMessageChannel();
                             this.flutterEngine.getLifecycleChannel().appIsResumed();
-                            Log.d(TAG, "Engine attached and resumed (visible)");
+                            Log.d(TAG, "Engine attached and resumed (visible with parent)");
                         } else {
-                            // Keep engine paused until overlay is shown
+                            // DO NOT attach view to engine when view has no parent!
+                            // The attachment and message channel setup will happen in show() 
+                            // when overlay becomes visible
                             this.flutterEngine.getLifecycleChannel().appIsInactive();
-                            Log.d(TAG, "Engine attached but kept inactive (not visible)");
+                            this.flutterEngine.getLifecycleChannel().appIsPaused();
+                            Log.d(TAG, "Engine stored but NOT attached to view (no parent - will attach on show)");
                         }
                     }
                 } catch (Exception e) { 
@@ -195,8 +199,7 @@ public class AccessibilityOverlay {
             isVisible = true;
             lastUpdated = System.currentTimeMillis();
             
-            // Re-attach Flutter engine if it was detached during hide
-            // and resume its lifecycle to enable semantics updates
+            // Attach Flutter engine now that view is in window (has a parent)
             // Use a small delay to ensure the view hierarchy is fully established
             // This prevents AccessibilityBridge NPE when the view is added but parent isn't set yet
             if (flutterEngine != null && flutterView != null) {
@@ -209,15 +212,17 @@ public class AccessibilityOverlay {
                             // Check if already attached
                             if (viewRef.getAttachedFlutterEngine() != engineRef) {
                                 viewRef.attachToFlutterEngine(engineRef);
+                                // Set up message channel now that we're attached
+                                setupMessageChannel();
                             }
                             // Resume the engine lifecycle now that the view is properly attached
                             engineRef.getLifecycleChannel().appIsResumed();
-                            Log.d(TAG, "Engine resumed for overlay: " + overlayId);
+                            Log.d(TAG, "Engine attached and resumed for overlay: " + overlayId);
                         } else {
-                            Log.w(TAG, "View not ready for engine resume, skipping for overlay: " + overlayId);
+                            Log.w(TAG, "View not ready for engine attachment, skipping for overlay: " + overlayId);
                         }
                     } catch (Exception attachE) {
-                        Log.w(TAG, "Error re-attaching engine on show: " + attachE.getMessage());
+                        Log.w(TAG, "Error attaching engine on show: " + attachE.getMessage());
                     }
                 }, 50); // Small delay to let view hierarchy settle
             }

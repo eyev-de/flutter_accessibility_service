@@ -300,25 +300,19 @@ public class AccessibilityListener extends AccessibilityService {
             // Initialize Flutter engine group for multiple overlays
             engineGroup = new FlutterEngineGroup(getApplicationContext());
 
-            // Check if cached FlutterEngine exists before attaching
+            // DON'T attach to engine here - only attach when overlay is shown
+            // This prevents AccessibilityBridge NPE when view has no parent
             FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
             if (cachedEngine != null) {
-                Log.d("AccessibilityListener", "Found cached FlutterEngine, attaching to overlay view");
-                // Ensure we're on the main thread for engine attachment to prevent JNI issues
-                new Handler(Looper.getMainLooper()).post(() -> {
-                    try {
-                        if (mOverlayView != null && cachedEngine != null) {
-                            mOverlayView.attachToFlutterEngine(cachedEngine);
-                            Log.d("AccessibilityListener", "Flutter engine attached successfully");
-                        }
-                    } catch (Exception e) {
-                        Log.e("AccessibilityListener", "Error attaching Flutter engine: " + e.getMessage(), e);
-                    }
-                });
+                Log.d("AccessibilityListener", "Found cached FlutterEngine, will attach when overlay is shown");
+                // Keep engine inactive until overlay is shown
+                try {
+                    cachedEngine.getLifecycleChannel().appIsInactive();
+                } catch (Exception e) {
+                    Log.w("AccessibilityListener", "Error setting engine inactive: " + e.getMessage());
+                }
             } else {
                 Log.w("AccessibilityListener", "Cached FlutterEngine not found - overlay functionality may be limited");
-                // Continue without attaching to engine - this prevents the crash
-                // The overlay can still be created but won't have Flutter content
             }
 
             mOverlayView.setFitsSystemWindows(true);
@@ -349,20 +343,25 @@ public class AccessibilityListener extends AccessibilityService {
                             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
                 }
                 lp.gravity = gravity;
+                
+                // Add view to window FIRST
                 mWindowManager.addView(mOverlayView, lp);
                 isOverlayShown = true;
                 
-                // Resume the engine now that the view is in the window hierarchy
-                // Use a small delay to ensure the view hierarchy is fully established
+                // NOW attach to engine and resume - view has a valid parent
                 new Handler(Looper.getMainLooper()).postDelayed(() -> {
                     try {
                         FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
                         if (cachedEngine != null && mOverlayView != null && mOverlayView.getParent() != null) {
+                            // Attach view to engine only now that it has a parent
+                            if (mOverlayView.getAttachedFlutterEngine() != cachedEngine) {
+                                mOverlayView.attachToFlutterEngine(cachedEngine);
+                            }
                             cachedEngine.getLifecycleChannel().appIsResumed();
-                            Log.d("AccessibilityListener", "Legacy overlay engine resumed after show");
+                            Log.d("AccessibilityListener", "Legacy overlay: view attached to engine and resumed");
                         }
                     } catch (Exception e) {
-                        Log.w("AccessibilityListener", "Error resuming engine after show: " + e.getMessage());
+                        Log.w("AccessibilityListener", "Error attaching/resuming engine after show: " + e.getMessage());
                     }
                 }, 50);
                 
@@ -410,6 +409,19 @@ public class AccessibilityListener extends AccessibilityService {
      * Called during hot restart to prevent AccessibilityBridge crashes.
      */
     static public void detachLegacyOverlayFromEngine() {
+        // First, pause the cached engine to stop any accessibility events
+        try {
+            FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
+            if (cachedEngine != null) {
+                Log.d("AccessibilityListener", "Pausing cached engine before detach");
+                cachedEngine.getLifecycleChannel().appIsInactive();
+                cachedEngine.getLifecycleChannel().appIsPaused();
+            }
+        } catch (Exception e) {
+            Log.w("AccessibilityListener", "Error pausing cached engine: " + e.getMessage());
+        }
+        
+        // Then detach the view
         if (mOverlayView != null) {
             try {
                 Log.d("AccessibilityListener", "Detaching legacy overlay from engine");
@@ -425,27 +437,39 @@ public class AccessibilityListener extends AccessibilityService {
      * Called after hot restart to restore functionality.
      */
     static public void reattachLegacyOverlayToEngine() {
-        if (mOverlayView != null) {
-            FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
-            if (cachedEngine != null) {
-                try {
-                    Log.d("AccessibilityListener", "Re-attaching legacy overlay to new engine");
+        FlutterEngine cachedEngine = FlutterEngineCache.getInstance().get(CACHED_TAG);
+        if (cachedEngine != null) {
+            try {
+                // ONLY attach if overlay is visible and has a parent
+                // This prevents AccessibilityBridge NPE
+                if (isOverlayShown && mOverlayView != null && mOverlayView.getParent() != null) {
+                    Log.d("AccessibilityListener", "Re-attaching legacy overlay to new engine (visible)");
                     mOverlayView.attachToFlutterEngine(cachedEngine);
                     
-                    // CRITICAL: Only resume engine if the overlay is actually shown (has a parent)
-                    // Calling appIsResumed() on an engine whose view has no parent causes 
-                    // AccessibilityBridge NPE when it tries to send accessibility events
-                    if (isOverlayShown && mOverlayView.getParent() != null) {
-                        cachedEngine.getLifecycleChannel().appIsResumed();
-                        Log.d("AccessibilityListener", "Legacy overlay engine resumed (visible)");
-                    } else {
-                        // Keep engine inactive until overlay is shown
-                        cachedEngine.getLifecycleChannel().appIsInactive();
-                        Log.d("AccessibilityListener", "Legacy overlay engine kept inactive (not visible)");
-                    }
-                } catch (Exception e) {
-                    Log.w("AccessibilityListener", "Error re-attaching legacy overlay: " + e.getMessage());
+                    // CRITICAL: Delay resuming until view hierarchy is stable
+                    // Resume triggers semantics updates which crash if view has no parent
+                    final FlutterEngine engineRef = cachedEngine;
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        try {
+                            // Double-check parent is still valid before resuming
+                            if (mOverlayView != null && mOverlayView.getParent() != null && isOverlayShown) {
+                                engineRef.getLifecycleChannel().appIsResumed();
+                                Log.d("AccessibilityListener", "Legacy overlay engine resumed after delay");
+                            } else {
+                                Log.w("AccessibilityListener", "Legacy overlay parent became null, keeping engine paused");
+                                engineRef.getLifecycleChannel().appIsInactive();
+                            }
+                        } catch (Exception e) {
+                            Log.w("AccessibilityListener", "Error resuming legacy overlay engine: " + e.getMessage());
+                        }
+                    }, 100);
+                } else {
+                    // Keep engine inactive - don't attach view until it's shown
+                    cachedEngine.getLifecycleChannel().appIsInactive();
+                    Log.d("AccessibilityListener", "Legacy overlay not visible, engine kept inactive (no view attached)");
                 }
+            } catch (Exception e) {
+                Log.w("AccessibilityListener", "Error re-attaching legacy overlay: " + e.getMessage());
             }
         }
     }
