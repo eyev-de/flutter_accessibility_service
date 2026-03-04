@@ -63,6 +63,16 @@ public class AccessibilityOverlay {
         
         initializeView();
         setupLayoutParams();
+
+        // Pre-attach view as INVISIBLE so show/hide only needs setVisibility
+        if (flutterView != null) {
+            flutterView.setVisibility(View.INVISIBLE);
+            try {
+                windowManager.addView(flutterView, layoutParams);
+            } catch (Exception e) {
+                Log.e(TAG, "Error pre-attaching overlay view: " + e.getMessage(), e);
+            }
+        }
     }
     
     private void initializeView() {
@@ -184,18 +194,9 @@ public class AccessibilityOverlay {
         }
         
         try {
-            // Clean up any existing view state before showing
-            if (flutterView.getParent() != null) {
-                Log.w(TAG, "FlutterView already has parent, cleaning up before showing overlay: " + overlayId);
-                try {
-                    windowManager.removeView(flutterView);
-                } catch (Exception cleanupE) {
-                    Log.w(TAG, "Error during cleanup before show: " + cleanupE.getMessage());
-                }
-            }
-            
             setupTouchHandling();
-            windowManager.addView(flutterView, layoutParams);
+            flutterView.setVisibility(View.VISIBLE);
+            windowManager.updateViewLayout(flutterView, layoutParams);
             isVisible = true;
             lastUpdated = System.currentTimeMillis();
             
@@ -254,22 +255,7 @@ public class AccessibilityOverlay {
                 }
             }
             
-            // Detach Flutter view from engine before removing from window
-            // This ensures no accessibility events are sent during transition
-            if (flutterView != null && flutterEngine != null) {
-                try {
-                    flutterView.detachFromFlutterEngine();
-                } catch (Exception detachE) {
-                    Log.w(TAG, "Error detaching from engine on hide: " + detachE.getMessage());
-                }
-            }
-            
-            // Check if view is actually attached before trying to remove
-            if (flutterView.getParent() != null) {
-                windowManager.removeView(flutterView);
-            } else {
-                Log.w(TAG, "FlutterView has no parent, skipping removeView for overlay: " + overlayId);
-            }
+            flutterView.setVisibility(View.INVISIBLE);
             
             isVisible = false;
             lastUpdated = System.currentTimeMillis();
