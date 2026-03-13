@@ -133,18 +133,17 @@ public class AccessibilityOverlay {
             runOnMain(() -> {
                 try {
                     if (flutterView != null && this.flutterEngine != null) {
-                        // CRITICAL: Only attach view to engine if the view has a parent (is in window)
-                        // Attaching when view has no parent causes AccessibilityBridge NPE crash
-                        // because Flutter tries to send accessibility events but ViewParent is null
-                        if (isVisible && flutterView.getParent() != null) {
+                        // Attach view to engine if the view has a parent (is in window).
+                        // The view is pre-added to WindowManager as INVISIBLE in the constructor,
+                        // so it has a parent even when not visible — this avoids AccessibilityBridge NPE.
+                        if (flutterView.getParent() != null) {
                             flutterView.attachToFlutterEngine(this.flutterEngine);
                             setupMessageChannel();
                             this.flutterEngine.getLifecycleChannel().appIsResumed();
-                            Log.d(TAG, "Engine attached and resumed (visible with parent)");
+                            Log.d(TAG, "Engine attached and resumed (view has parent)");
                         } else {
-                            // DO NOT attach view to engine when view has no parent!
-                            // The attachment and message channel setup will happen in show() 
-                            // when overlay becomes visible
+                            // No parent — should not happen since view is pre-attached,
+                            // but fall back to paused state to be safe.
                             this.flutterEngine.getLifecycleChannel().appIsInactive();
                             this.flutterEngine.getLifecycleChannel().appIsPaused();
                             Log.d(TAG, "Engine stored but NOT attached to view (no parent - will attach on show)");
