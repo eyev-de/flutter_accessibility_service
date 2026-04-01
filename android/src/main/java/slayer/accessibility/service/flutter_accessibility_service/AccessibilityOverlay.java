@@ -615,16 +615,17 @@ public class AccessibilityOverlay {
             );
             
             messageChannel.setMethodCallHandler((call, result) -> {
-                if ("invokeMethod".equals(call.method)) {
-                    Integer targetOverlayId = call.argument("targetOverlayId");
-                    String method = call.argument("method");
-                    String arguments = call.argument("arguments");
-                    
-                    if (targetOverlayId != null && arguments != null) {
-                        boolean success = AccessibilityListener.sendMessage(targetOverlayId, method, arguments);
+                // Handle direct method invocations (like desktop_multi_window pattern)
+                Map<String, Object> args = (Map<String, Object>) call.arguments;
+                if (args != null) {
+                    Integer targetOverlayId = (Integer) args.get("targetOverlayId");
+                    Object arguments = args.get("arguments");
+
+                    if (targetOverlayId != null) {
+                        boolean success = AccessibilityListener.sendMessage(targetOverlayId, call.method, arguments, overlayId);
                         result.success(success);
                     } else {
-                        result.error("INVALID_ARGS", "Target overlay ID and arguments are required", null);
+                        result.error("INVALID_ARGS", "Target overlay ID is required", null);
                     }
                 } else {
                     result.notImplemented();
@@ -640,32 +641,31 @@ public class AccessibilityOverlay {
     /**
      * Send a message to this overlay via its message channel
      */
-    public boolean sendMessage(String method, String jsonMessage, int fromOverlayId) {
+    public boolean sendMessage(String method, Object arguments, int fromOverlayId) {
         if (messageChannel == null) {
             Log.w(TAG, "Message channel not available for overlay: " + overlayId);
             return false;
         }
-        
+
         try {
             Map<String, Object> messageData = new HashMap<>();
             messageData.put("fromOverlayId", fromOverlayId);
             messageData.put("method", method);
-            messageData.put("arguments", jsonMessage);
-            
+            messageData.put("arguments", arguments);
+
             messageChannel.invokeMethod("receiveMessage", messageData);
-            // Log.d(TAG, "Message sent to overlay " + overlayId + " from " + fromOverlayId + ": " + jsonMessage);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error sending message to overlay " + overlayId + ": " + e.getMessage(), e);
             return false;
         }
     }
-    
+
     /**
      * Send a message to this overlay via its message channel (legacy method)
      */
-    public boolean sendMessage(String method, String jsonMessage) {
-        return sendMessage(method, jsonMessage, -1); // Unknown source
+    public boolean sendMessage(String method, Object arguments) {
+        return sendMessage(method, arguments, -1); // Unknown source
     }
     
     /**

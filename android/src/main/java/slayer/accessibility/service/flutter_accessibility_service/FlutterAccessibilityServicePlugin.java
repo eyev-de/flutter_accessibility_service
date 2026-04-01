@@ -265,12 +265,12 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         } else if (call.method.equals("invokeMethod")) {
             Integer targetOverlayId = call.argument("targetOverlayId");
             String method = call.argument("method");
-            String arguments = call.argument("arguments");
-            if (targetOverlayId != null && arguments != null) {
-                boolean success = AccessibilityListener.sendMessage(targetOverlayId, method, arguments);
+            Object arguments = call.argument("arguments");
+            if (targetOverlayId != null) {
+                boolean success = AccessibilityListener.sendMessage(targetOverlayId, method, arguments, 0);
                 result.success(success);
             } else {
-                result.error("INVALID_ARGS", "Target overlay ID and arguments are required", null);
+                result.error("INVALID_ARGS", "Target overlay ID is required", null);
             }
         } else if (call.method.equals("click")) {
             Double x = call.argument("x");

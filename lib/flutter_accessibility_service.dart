@@ -197,9 +197,9 @@ class FlutterAccessibilityService {
         if (call.method == 'receiveMessage') {
           final data = Map<String, dynamic>.from(call.arguments as Map);
           final fromOverlayId = data['fromOverlayId'] as int? ?? -1;
-          final message = data['arguments'];
+          final arguments = data['arguments'];
           final method = data['method'];
-          final result = await handler(MethodCall(method, jsonDecode(message)), fromOverlayId);
+          final result = await handler(MethodCall(method, arguments), fromOverlayId);
           return result;
         }
       } catch (e) {
@@ -229,7 +229,7 @@ class FlutterAccessibilityService {
         {
           'targetOverlayId': targetOverlayId,
           'method': method,
-          'arguments': jsonEncode(arguments),
+          'arguments': arguments,
         },
       );
     } on PlatformException catch (error) {
