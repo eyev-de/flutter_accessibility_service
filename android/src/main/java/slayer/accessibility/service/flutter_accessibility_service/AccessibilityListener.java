@@ -553,12 +553,38 @@ public class AccessibilityListener extends AccessibilityService {
         }
     }
 
+    /**
+     * Hook allowing the host app to register a narrow subset of Flutter plugins
+     * on overlay engines instead of the full GeneratedPluginRegistrant set.
+     * When set, {@link #createEngineForOverlay} disables automatic plugin
+     * registration and invokes {@link OverlayEngineConfigurator#configure}
+     * after each engine is spawned.
+     */
+    public interface OverlayEngineConfigurator {
+        void configure(FlutterEngine engine, String entrypoint);
+    }
+
+    private static volatile OverlayEngineConfigurator overlayEngineConfigurator;
+
+    public static void setOverlayEngineConfigurator(OverlayEngineConfigurator configurator) {
+        overlayEngineConfigurator = configurator;
+    }
+
     public static FlutterEngine createEngineForOverlay(Context context, String entrypoint) {
         try {
             DartExecutor.DartEntrypoint dartEntrypoint = new DartExecutor.DartEntrypoint(
                 FlutterInjector.instance().flutterLoader().findAppBundlePath(),
                 entrypoint
             );
+            OverlayEngineConfigurator configurator = overlayEngineConfigurator;
+            if (configurator != null) {
+                FlutterEngineGroup.Options options = new FlutterEngineGroup.Options(context)
+                    .setDartEntrypoint(dartEntrypoint)
+                    .setAutomaticallyRegisterPlugins(false);
+                FlutterEngine engine = engineGroup.createAndRunEngine(options);
+                configurator.configure(engine, entrypoint);
+                return engine;
+            }
             return engineGroup.createAndRunEngine(context, dartEntrypoint);
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error creating Flutter engine: " + e.getMessage(), e);
