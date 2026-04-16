@@ -72,6 +72,64 @@ public class AccessibilityListener extends AccessibilityService {
         return nodeMap.get(id);
     }
 
+    /// Finds the deepest actionable node whose bounds contain (x, y) in the active
+    /// window and invokes the given AccessibilityNodeInfo action on it. Works on
+    /// views that reject synthesized touch gestures (e.g. FLAG_SECURE surfaces).
+    /// Returns true iff a matching node was found and performAction succeeded.
+    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+    public static boolean performActionAtPoint(int x, int y, int action) {
+        if (serviceInstance == null) {
+            Log.e("AccessibilityListener", "Service not connected - cannot perform action at point");
+            return false;
+        }
+        AccessibilityNodeInfo root;
+        try {
+            root = serviceInstance.getRootInActiveWindow();
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "getRootInActiveWindow failed: " + e.getMessage());
+            return false;
+        }
+        if (root == null) {
+            Log.w("AccessibilityListener", "No root node for active window");
+            return false;
+        }
+        AccessibilityNodeInfo target = findDeepestActionableNode(root, x, y, action, 0);
+        if (target == null) {
+            Log.d("AccessibilityListener", "No actionable node at (" + x + ", " + y + ") for action " + action);
+            return false;
+        }
+        try {
+            boolean success = target.performAction(action);
+            Log.d("AccessibilityListener", "performAction " + action + " at (" + x + ", " + y + ") on '" + target.getViewIdResourceName() + "' = " + success);
+            return success;
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "performAction threw: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+    private static AccessibilityNodeInfo findDeepestActionableNode(
+            AccessibilityNodeInfo node, int x, int y, int action, int depth) {
+        if (node == null || depth > maxDepth) return null;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(x, y)) return null;
+
+        // Prefer the deepest match: recurse into children first.
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            AccessibilityNodeInfo match = findDeepestActionableNode(child, x, y, action, depth + 1);
+            if (match != null) return match;
+        }
+
+        if (!node.isVisibleToUser() || !node.isEnabled()) return null;
+        if (action == AccessibilityNodeInfo.ACTION_CLICK && node.isClickable()) return node;
+        if (action == AccessibilityNodeInfo.ACTION_LONG_CLICK && node.isLongClickable()) return node;
+        return null;
+    }
+
     @RequiresApi(api = Build.VERSION_CODES.N)
     @Override
     public void onAccessibilityEvent(AccessibilityEvent accessibilityEvent) {

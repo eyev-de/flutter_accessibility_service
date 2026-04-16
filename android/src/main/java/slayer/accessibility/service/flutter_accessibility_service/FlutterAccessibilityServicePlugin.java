@@ -285,6 +285,30 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             } else {
                 result.success(false);
             }
+        } else if (call.method.equals("performClickAtPoint")) {
+            Double px = call.argument("x");
+            Double py = call.argument("y");
+            if (px == null || py == null) {
+                result.error("INVALID_ARGS", "x and y are required", null);
+            } else if (!Utils.isAccessibilitySettingsOn(context)) {
+                result.success(false);
+            } else {
+                boolean ok = AccessibilityListener.performActionAtPoint(
+                        px.intValue(), py.intValue(), AccessibilityNodeInfo.ACTION_CLICK);
+                result.success(ok);
+            }
+        } else if (call.method.equals("performLongPressAtPoint")) {
+            Double px = call.argument("x");
+            Double py = call.argument("y");
+            if (px == null || py == null) {
+                result.error("INVALID_ARGS", "x and y are required", null);
+            } else if (!Utils.isAccessibilitySettingsOn(context)) {
+                result.success(false);
+            } else {
+                boolean ok = AccessibilityListener.performActionAtPoint(
+                        px.intValue(), py.intValue(), AccessibilityNodeInfo.ACTION_LONG_CLICK);
+                result.success(ok);
+            }
         } else if (call.method.equals("longPress")) {
             Double x = call.argument("x");
             Double y = call.argument("y");

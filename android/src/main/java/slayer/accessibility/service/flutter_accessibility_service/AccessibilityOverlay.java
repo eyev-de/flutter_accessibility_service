@@ -278,65 +278,56 @@ public class AccessibilityOverlay {
             layoutParams.gravity = Gravity.TOP | Gravity.START;
             layoutParams.x = x;
             layoutParams.y = y;
-            
-            if (isVisible && windowManager != null && flutterView != null) {
-                // Check if view is still attached before updating
-                if (flutterView.getParent() != null) {
+
+            // Apply the new layout whenever the view is attached to the window
+            // manager, even while INVISIBLE. hide() only flips the visibility flag
+            // and leaves the view attached, so gating on isVisible here stalls the
+            // layout update until show() runs - which causes a one-frame flash at
+            // the old position on the hide -> resize -> show transition.
+            if (windowManager != null && flutterView != null && flutterView.getParent() != null) {
+                try {
+                    windowManager.updateViewLayout(flutterView, layoutParams);
+                } catch (IllegalArgumentException e) {
+                    Log.w(TAG, "View not attached during position update, re-adding: " + e.getMessage());
                     try {
-                        windowManager.updateViewLayout(flutterView, layoutParams);
-                        // Log.d(TAG, "WindowManager.updateViewLayout called for overlay: " + overlayId);
-                    } catch (IllegalArgumentException e) {
-                        Log.w(TAG, "View not attached during position update, re-adding: " + e.getMessage());
-                        // Try to re-add the view if it became detached
-                        try {
-                            windowManager.addView(flutterView, layoutParams);
-                        } catch (Exception reAddE) {
-                            Log.e(TAG, "Failed to re-add view during position update: " + reAddE.getMessage());
-                            return false;
-                        }
+                        windowManager.addView(flutterView, layoutParams);
+                    } catch (Exception reAddE) {
+                        Log.e(TAG, "Failed to re-add view during position update: " + reAddE.getMessage());
+                        return false;
                     }
-                } else {
-                    Log.w(TAG, "FlutterView has no parent during position update, overlay may have been removed");
-                    isVisible = false; // Update internal state
-                    return false;
                 }
             } else {
-                Log.w(TAG, "Cannot update position - overlay not visible or missing components. " +
-                     "isVisible: " + isVisible + ", windowManager: " + (windowManager != null) + 
-                     ", flutterView: " + (flutterView != null));
+                Log.w(TAG, "Cannot update position - missing components or detached. " +
+                     "windowManager: " + (windowManager != null) +
+                     ", flutterView: " + (flutterView != null) +
+                     ", parent: " + (flutterView != null && flutterView.getParent() != null));
             }
-            
+
             lastUpdated = System.currentTimeMillis();
-            // Log.d(TAG, "Overlay position updated: " + overlayId + " -> (" + x + ", " + y + ")");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error updating overlay position: " + e.getMessage(), e);
             return false;
         }
     }
-    
+
     public boolean updateSize(int width, int height) {
         try {
             layoutParams.width = width;
             layoutParams.height = height;
-            
-            if (isVisible && windowManager != null && flutterView != null) {
-                // Check if view is still attached before updating
-                if (flutterView.getParent() != null) {
-                    try {
-                        windowManager.updateViewLayout(flutterView, layoutParams);
-                    } catch (IllegalArgumentException e) {
-                        Log.w(TAG, "View not attached during size update: " + e.getMessage());
-                        isVisible = false; // Update internal state
-                        return false;
-                    }
-                } else {
-                    Log.w(TAG, "FlutterView has no parent during size update");
-                    isVisible = false;
+
+            // Apply immediately if the view is attached, even while INVISIBLE. See
+            // updatePosition above for why gating on isVisible breaks the
+            // hide -> resize -> show transition.
+            if (windowManager != null && flutterView != null && flutterView.getParent() != null) {
+                try {
+                    windowManager.updateViewLayout(flutterView, layoutParams);
+                } catch (IllegalArgumentException e) {
+                    Log.w(TAG, "View not attached during size update: " + e.getMessage());
                     return false;
                 }
             }
-            
+
             lastUpdated = System.currentTimeMillis();
             Log.d(TAG, "Overlay size updated: " + overlayId + " -> " + width + "x" + height);
             return true;

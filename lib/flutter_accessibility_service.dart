@@ -507,6 +507,33 @@ class FlutterAccessibilityService {
     }
   }
 
+  /// Finds the deepest clickable accessibility node at ([x], [y]) and invokes
+  /// `AccessibilityNodeInfo.ACTION_CLICK` on it directly.
+  ///
+  /// Unlike [click], this does not synthesize a touch gesture, so it works on
+  /// views that reject gesture injection (e.g. FLAG_SECURE surfaces, certain
+  /// system UI buttons). Returns `false` if no clickable node exists under the
+  /// point or if the accessibility service is not enabled.
+  static Future<bool> performClickAtPoint(double x, double y) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('performClickAtPoint', {'x': x, 'y': y}) ?? false;
+    } on PlatformException catch (error) {
+      log("Error performing click at point: $error");
+      return false;
+    }
+  }
+
+  /// Same as [performClickAtPoint] but dispatches `ACTION_LONG_CLICK` to the
+  /// deepest long-clickable node under ([x], [y]).
+  static Future<bool> performLongPressAtPoint(double x, double y) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('performLongPressAtPoint', {'x': x, 'y': y}) ?? false;
+    } on PlatformException catch (error) {
+      log("Error performing long press at point: $error");
+      return false;
+    }
+  }
+
   /// Performs a long press gesture at the specified coordinates.
   ///
   /// This is the Android equivalent of a right-click on desktop platforms.
