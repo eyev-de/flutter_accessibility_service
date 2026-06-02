@@ -1,12 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_accessibility_service/config/overlay_gravity.dart';
 import 'package:flutter_accessibility_service/flutter_accessibility_service.dart';
 
 import 'package:collection/collection.dart';
+
+// Imported so the snapHighlightOverlay() entrypoint is compiled into the app.
+// ignore: unused_import
+import 'snap_overlay.dart';
 
 @pragma("vm:entry-point")
 void accessibilityOverlay() {
@@ -168,6 +173,13 @@ class _MyAppState extends State<MyApp> {
   int? selectedOverlayToRemove;
   int nextOverlayId = 1; // Counter for unique overlay IDs
 
+  // Gaze "snap to item" feature
+  static const int _snapOverlayId = 99;
+  bool snapMode = false;
+  SnapController? _snapController;
+  Timer? _gazeTimer;
+  double _gazeAngle = 0; // drives the simulated gaze path
+
   @override
   void initState() {
     super.initState();
@@ -180,6 +192,8 @@ class _MyAppState extends State<MyApp> {
   void dispose() {
     _subscription?.cancel();
     _messageSubscription?.cancel();
+    _gazeTimer?.cancel();
+    _snapController?.dispose();
     super.dispose();
   }
 
@@ -361,6 +375,83 @@ class _MyAppState extends State<MyApp> {
     } catch (e) {
       log('Error creating overlay: $e');
     }
+  }
+
+  // ===========================================================================
+  // Gaze "snap to item"
+  // ===========================================================================
+
+  Future<void> toggleSnapMode() async {
+    if (snapMode) {
+      await disableSnapMode();
+    } else {
+      await enableSnapMode();
+    }
+  }
+
+  Future<void> enableSnapMode() async {
+    final hasPermission = await FlutterAccessibilityService.isAccessibilityPermissionEnabled();
+    if (!hasPermission) {
+      log('Snap mode needs accessibility permission - requesting');
+      await FlutterAccessibilityService.requestAccessibilityPermission();
+      return;
+    }
+
+    // Full-screen, non-touchable highlight overlay anchored at (0,0) so screen
+    // coordinates map directly into it.
+    final metrics = await FlutterAccessibilityService.getDisplayMetrics();
+    final int width = metrics?.widthPixels ?? 1080;
+    final int height = metrics?.heightPixels ?? 2400;
+
+    final overlayId = await FlutterAccessibilityService.createOverlay(
+      _snapOverlayId,
+      options: OverlayOptions(
+        width: width,
+        height: height,
+        x: 0,
+        y: 0,
+        gravity: OverlayGravity.topLeft,
+        touchable: false,
+        focusable: false,
+        expandOutsideLayout: true,
+      ),
+      entrypoint: 'snapHighlightOverlay',
+    );
+
+    if (overlayId == null) {
+      log('Failed to create snap highlight overlay');
+      return;
+    }
+    await FlutterAccessibilityService.showOverlay(overlayId);
+
+    _snapController = SnapController(highlightOverlayId: overlayId);
+
+    // Give the overlay engine a moment to attach before driving it.
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    // Simulated gaze: a point tracing a Lissajous path across the screen.
+    // Replace this with your real gaze stream (raw screen pixels).
+    _gazeTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      _gazeAngle += 0.05;
+      final gx = width / 2 + (width * 0.4) * math.sin(_gazeAngle);
+      final gy = height / 2 + (height * 0.4) * math.sin(_gazeAngle * 0.7);
+      _snapController?.onGaze(gx, gy);
+    });
+
+    setState(() => snapMode = true);
+    await refreshOverlayList();
+    log('Snap mode enabled (overlay $overlayId)');
+  }
+
+  Future<void> disableSnapMode() async {
+    _gazeTimer?.cancel();
+    _gazeTimer = null;
+    _snapController?.dispose();
+    _snapController = null;
+    await FlutterAccessibilityService.removeOverlay(_snapOverlayId);
+    setState(() => snapMode = false);
+    await refreshOverlayList();
+    log('Snap mode disabled');
   }
 
   Future<void> removeSelectedOverlay() async {
@@ -584,6 +675,14 @@ class _MyAppState extends State<MyApp> {
                         );
                       },
                       child: const Text("Take ScreenShot"),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: toggleSnapMode,
+                      style: TextButton.styleFrom(
+                        foregroundColor: snapMode ? Colors.green : null,
+                      ),
+                      child: Text(snapMode ? "Snap Mode: ON" : "Snap Mode: OFF"),
                     ),
                     const SizedBox(width: 8),
                     TextButton(

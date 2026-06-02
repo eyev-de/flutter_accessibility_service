@@ -67,6 +67,18 @@ public class AccessibilityListener extends AccessibilityService {
     private static final ConcurrentHashMap<Integer, ConcurrentLinkedQueue<String>> messageQueues = new ConcurrentHashMap<>();
     private static final String MESSAGE_INTENT = "ACCESSIBILITY_MESSAGE";
     private static volatile boolean isMainAppListening = false;
+
+    // Set true whenever the foreground window changes so the Dart snap controller
+    // can refetch the interactive-node list early instead of waiting for its poll tick.
+    private static volatile boolean nodesDirty = true;
+
+    /// Returns true (and clears the flag) if the window content/state changed since the
+    /// last call. Used by the gaze "snap to item" feature to invalidate its node cache.
+    public static boolean consumeNodesDirty() {
+        boolean dirty = nodesDirty;
+        nodesDirty = false;
+        return dirty;
+    }
     
     public static AccessibilityNodeInfo getNodeInfo(String id) {
         return nodeMap.get(id);
@@ -82,15 +94,21 @@ public class AccessibilityListener extends AccessibilityService {
             Log.e("AccessibilityListener", "Service not connected - cannot perform action at point");
             return false;
         }
-        AccessibilityNodeInfo root;
-        try {
-            root = serviceInstance.getRootInActiveWindow();
-        } catch (Exception e) {
-            Log.e("AccessibilityListener", "getRootInActiveWindow failed: " + e.getMessage());
-            return false;
+        // Target the top-most window that actually contains the point. getRootInActiveWindow()
+        // only returns the input-focused window (e.g. the app), so taps on a soft keyboard / IME
+        // or any window layered above the active one would otherwise search the wrong tree and
+        // hit a stray node behind the visible surface. Falls back to the active window.
+        AccessibilityNodeInfo root = findTopmostWindowRootAtPoint(x, y);
+        if (root == null) {
+            try {
+                root = serviceInstance.getRootInActiveWindow();
+            } catch (Exception e) {
+                Log.e("AccessibilityListener", "getRootInActiveWindow failed: " + e.getMessage());
+                return false;
+            }
         }
         if (root == null) {
-            Log.w("AccessibilityListener", "No root node for active window");
+            Log.w("AccessibilityListener", "No root node for point (" + x + ", " + y + ")");
             return false;
         }
         AccessibilityNodeInfo target = findDeepestActionableNode(root, x, y, action, 0);
@@ -130,9 +148,135 @@ public class AccessibilityListener extends AccessibilityService {
         return null;
     }
 
+    /// Returns the root node of the visually top-most window whose bounds contain the point,
+    /// ignoring our own accessibility overlays. This makes node clicks land in the correct
+    /// window (e.g. the IME/soft-keyboard window) instead of always the input-focused window.
+    /// Returns null if no window contains the point or windows cannot be enumerated.
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    private static AccessibilityNodeInfo findTopmostWindowRootAtPoint(int x, int y) {
+        if (serviceInstance == null) return null;
+        List<AccessibilityWindowInfo> windows;
+        try {
+            windows = serviceInstance.getWindows();
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "getWindows failed: " + e.getMessage());
+            return null;
+        }
+        if (windows == null || windows.isEmpty()) return null;
+        AccessibilityWindowInfo best = null;
+        Rect bounds = new Rect();
+        for (AccessibilityWindowInfo w : windows) {
+            if (w == null) continue;
+            // Never target our own gaze cursor / highlight overlays.
+            if (w.getType() == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue;
+            w.getBoundsInScreen(bounds);
+            if (!bounds.contains(x, y)) continue;
+            // Higher layer == visually on top; pick the front-most window containing the point.
+            if (best == null || w.getLayer() > best.getLayer()) best = w;
+        }
+        if (best == null) return null;
+        try {
+            return best.getRoot();
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "window.getRoot failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /// Enumerates every actionable (clickable / long-clickable / scrollable / editable) node
+    /// currently on screen together with its screen bounds. Used by the gaze-driven
+    /// "snap to item" feature, which computes the nearest snap target in Dart. Returns a
+    /// fresh, fully-serialized list each call (no AccessibilityNodeInfo handles retained).
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    public static List<Map<String, Object>> getInteractiveNodes() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (serviceInstance == null) {
+            Log.e("AccessibilityListener", "Service not connected - cannot enumerate nodes");
+            return out;
+        }
+        try {
+            List<AccessibilityWindowInfo> windows = serviceInstance.getWindows();
+            if (windows != null && !windows.isEmpty()) {
+                for (AccessibilityWindowInfo w : windows) {
+                    if (w == null) continue;
+                    // Skip our own highlight/overlay windows so they never become snap targets.
+                    if (w.getType() == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue;
+                    AccessibilityNodeInfo root = w.getRoot();
+                    if (root != null) {
+                        collectInteractive(root, out, 0, w.getType());
+                    }
+                }
+            } else {
+                AccessibilityNodeInfo root = serviceInstance.getRootInActiveWindow();
+                if (root != null) collectInteractive(root, out, 0, -1);
+            }
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "getInteractiveNodes failed: " + e.getMessage());
+        }
+        return out;
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    private static void collectInteractive(AccessibilityNodeInfo node,
+            List<Map<String, Object>> out, int depth, int windowType) {
+        if (node == null || depth > maxDepth) return;
+        // Roots are owned by getWindows()/getRootInActiveWindow(); only recycle nodes we obtain
+        // ourselves via getChild() (depth > 0).
+        boolean recycle = depth != 0;
+        try {
+            if (node.isVisibleToUser() && node.isEnabled()) {
+                boolean actionable = node.isClickable() || node.isLongClickable()
+                        || node.isScrollable() || node.isEditable();
+                if (actionable) {
+                    Rect b = new Rect();
+                    node.getBoundsInScreen(b);
+                    if (b.width() > 0 && b.height() > 0) {
+                        Map<String, Object> m = new HashMap<>();
+                        m.put("bounds", getBoundingPoints(b));
+                        m.put("isClickable", node.isClickable());
+                        m.put("isLongClickable", node.isLongClickable());
+                        m.put("isScrollable", node.isScrollable());
+                        m.put("isEditable", node.isEditable());
+                        m.put("isFocusable", node.isFocusable());
+                        m.put("text", node.getText() != null ? node.getText().toString() : null);
+                        m.put("contentDescription", node.getContentDescription() != null
+                                ? node.getContentDescription().toString() : null);
+                        m.put("viewId", node.getViewIdResourceName());
+                        m.put("className", node.getClassName() != null ? node.getClassName().toString() : null);
+                        m.put("windowType", windowType);
+                        String idBase = node.getViewIdResourceName() != null
+                                ? node.getViewIdResourceName()
+                                : (node.getClassName() != null ? node.getClassName().toString() : "node");
+                        m.put("id", idBase + "@" + b.left + "," + b.top + "," + b.right + "," + b.bottom);
+                        out.add(m);
+                    }
+                }
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) collectInteractive(child, out, depth + 1, windowType);
+            }
+        } finally {
+            if (recycle) {
+                try { node.recycle(); } catch (Exception ignore) {}
+            }
+        }
+    }
+
     @RequiresApi(api = Build.VERSION_CODES.N)
     @Override
     public void onAccessibilityEvent(AccessibilityEvent accessibilityEvent) {
+        // Lightweight "window changed" signal for the gaze snap-to-item feature.
+        // Do NOT serialize the tree or broadcast here — just flag the node list as stale so
+        // the Dart snap controller can refetch early. Full tree streaming stays disabled below.
+        if (accessibilityEvent != null) {
+            final int type = accessibilityEvent.getEventType();
+            if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                    || type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                    || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+                nodesDirty = true;
+            }
+        }
         // try {
         //     if (accessibilityEvent == null) {
         //         return;
@@ -320,7 +464,7 @@ public class AccessibilityListener extends AccessibilityService {
         // }
     }
 
-    private HashMap<String, Integer> getBoundingPoints(Rect rect) {
+    private static HashMap<String, Integer> getBoundingPoints(Rect rect) {
         HashMap<String, Integer> frame = new HashMap<>();
         frame.put("left", rect.left);
         frame.put("right", rect.right);
@@ -956,7 +1100,10 @@ public class AccessibilityListener extends AccessibilityService {
             GestureDescription.Builder clickBuilder = new GestureDescription.Builder();
             clickBuilder.addStroke(clickStroke);
 
-            // Dispatch the gesture with simple callback handling
+            // Dispatch the gesture with simple callback handling. A real touch is the most
+            // faithful emulation of a finger tap and works for web content, soft keyboards and
+            // normal UI. Only when the gesture is rejected (FLAG_SECURE / system surfaces that
+            // refuse synthesized touch) do we fall back to a node-level ACTION_CLICK.
             boolean success = dispatchGesture(clickBuilder.build(), new AccessibilityService.GestureResultCallback() {
                 @Override
                 public void onCompleted(GestureDescription gestureDescription) {
@@ -965,12 +1112,14 @@ public class AccessibilityListener extends AccessibilityService {
 
                 @Override
                 public void onCancelled(GestureDescription gestureDescription) {
-                    Log.w("AccessibilityListener", "Click gesture was cancelled at (" + x + ", " + y + ")");
+                    Log.w("AccessibilityListener", "Click gesture was cancelled at (" + x + ", " + y + ") - falling back to node ACTION_CLICK");
+                    performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_CLICK);
                 }
             }, null);
 
             if (!success) {
-                Log.w("AccessibilityListener", "Failed to dispatch click gesture at (" + x + ", " + y + ")");
+                Log.w("AccessibilityListener", "Failed to dispatch click gesture at (" + x + ", " + y + ") - falling back to node ACTION_CLICK");
+                performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_CLICK);
             }
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error performing click at (" + x + ", " + y + ")", e);
@@ -1011,12 +1160,14 @@ public class AccessibilityListener extends AccessibilityService {
 
                 @Override
                 public void onCancelled(GestureDescription gestureDescription) {
-                    Log.w("AccessibilityListener", "Long press gesture was cancelled at (" + x + ", " + y + ")");
+                    Log.w("AccessibilityListener", "Long press gesture was cancelled at (" + x + ", " + y + ") - falling back to node ACTION_LONG_CLICK");
+                    performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_LONG_CLICK);
                 }
             }, null);
 
             if (!success) {
-                Log.w("AccessibilityListener", "Failed to dispatch long press gesture at (" + x + ", " + y + ")");
+                Log.w("AccessibilityListener", "Failed to dispatch long press gesture at (" + x + ", " + y + ") - falling back to node ACTION_LONG_CLICK");
+                performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_LONG_CLICK);
             }
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error performing long press at (" + x + ", " + y + ")", e);

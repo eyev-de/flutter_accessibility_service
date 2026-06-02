@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_accessibility_service/accessibility_event.dart';
 import 'package:flutter_accessibility_service/constants.dart';
 import 'package:flutter_accessibility_service/models/display_info.dart';
+import 'package:flutter_accessibility_service/models/interactive_node.dart';
 import 'package:flutter_accessibility_service/config/overlay_options.dart';
 
 export 'config/overlay_options.dart';
@@ -20,7 +21,10 @@ export 'flutter_accessibility_service.dart';
 export 'accessibility_event.dart';
 export 'constants.dart';
 export 'models/display_info.dart';
+export 'models/interactive_node.dart';
 export 'config/overlay_config.dart';
+export 'snap/snap_resolver.dart';
+export 'snap/snap_controller.dart';
 
 class FlutterAccessibilityService {
   FlutterAccessibilityService._();
@@ -519,6 +523,40 @@ class FlutterAccessibilityService {
       return await _methodChannel.invokeMethod<bool>('performClickAtPoint', {'x': x, 'y': y}) ?? false;
     } on PlatformException catch (error) {
       log("Error performing click at point: $error");
+      return false;
+    }
+  }
+
+  /// Enumerates every actionable (clickable / long-clickable / scrollable /
+  /// editable) node currently on screen together with its screen bounds.
+  ///
+  /// This is the on-demand backbone of the gaze-driven "snap to item" feature:
+  /// the nearest-target computation runs in Dart over the returned list. The
+  /// result is a fresh snapshot each call — callers should throttle how often
+  /// they poll (see [SnapController]) rather than calling it per gaze sample.
+  ///
+  /// Returns an empty list if the accessibility service is not enabled.
+  static Future<List<InteractiveNode>> getInteractiveNodes() async {
+    try {
+      final List<dynamic>? raw = await _methodChannel.invokeMethod<List<dynamic>>('getInteractiveNodes');
+      if (raw == null) return <InteractiveNode>[];
+      return raw
+          .map((e) => InteractiveNode.fromMap(Map<dynamic, dynamic>.from(e as Map)))
+          .toList();
+    } on PlatformException catch (error) {
+      log("Error getting interactive nodes: $error");
+      return <InteractiveNode>[];
+    }
+  }
+
+  /// Returns `true` (and resets the flag) if the foreground window changed since
+  /// the last call. Lets the snap controller refetch [getInteractiveNodes] early
+  /// after a screen transition instead of waiting for its next poll tick.
+  static Future<bool> consumeNodesDirty() async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('consumeNodesDirty') ?? false;
+    } on PlatformException catch (error) {
+      log("Error consuming nodes-dirty flag: $error");
       return false;
     }
   }

@@ -297,6 +297,14 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                         px.intValue(), py.intValue(), AccessibilityNodeInfo.ACTION_CLICK);
                 result.success(ok);
             }
+        } else if (call.method.equals("getInteractiveNodes")) {
+            if (!Utils.isAccessibilitySettingsOn(context)) {
+                result.success(new java.util.ArrayList<>());
+            } else {
+                result.success(AccessibilityListener.getInteractiveNodes());
+            }
+        } else if (call.method.equals("consumeNodesDirty")) {
+            result.success(AccessibilityListener.consumeNodesDirty());
         } else if (call.method.equals("performLongPressAtPoint")) {
             Double px = call.argument("x");
             Double py = call.argument("y");
