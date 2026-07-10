@@ -32,9 +32,11 @@ class FlutterAccessibilityService {
   static const MethodChannel _methodChannel = MethodChannel('x-slayer/accessibility_channel');
   static const EventChannel _eventChannel = EventChannel('x-slayer/accessibility_event');
   static const EventChannel _messageEventChannel = EventChannel('x-slayer/accessibility_message');
+  static const EventChannel _serviceConnectionEventChannel = EventChannel('x-slayer/accessibility_service_connection');
   static const MethodChannel _overlayMessageChannel = MethodChannel('x-slayer/accessibility_message');
   static Stream<AccessibilityEvent>? _stream;
   static Stream<Map<String, dynamic>>? _messageStream;
+  static Stream<bool>? _serviceConnectionStream;
 
   /// stream the incoming Accessibility events
   static Stream<AccessibilityEvent> get accessStream {
@@ -76,6 +78,47 @@ class FlutterAccessibilityService {
     } on PlatformException catch (error) {
       log("$error");
       return false;
+    }
+  }
+
+  /// whether the accessibility service is currently bound and running.
+  ///
+  /// Distinct from [isAccessibilityPermissionEnabled]: the settings toggle
+  /// flips before the service has finished binding, and stays on if the
+  /// service crashes or is killed by the system.
+  static Future<bool> isServiceConnected() async {
+    try {
+      return await _methodChannel.invokeMethod('isServiceConnected') ?? false;
+    } on PlatformException catch (error) {
+      log("$error");
+      return false;
+    }
+  }
+
+  /// stream of service bind state changes: true on bind, false on destroy.
+  ///
+  /// Lets callers react to the service being enabled, disabled or killed
+  /// mid-session instead of polling the settings toggle.
+  static Stream<bool> get serviceConnectionStream {
+    if (Platform.isAndroid) {
+      _serviceConnectionStream ??= _serviceConnectionEventChannel.receiveBroadcastStream().map<bool>((event) => event == true);
+      return _serviceConnectionStream!;
+    }
+    throw Exception("Accessibility API exclusively available on Android!");
+  }
+
+  /// waits until the accessibility service is bound, or [timeout] elapses.
+  ///
+  /// Returns the final connection state. Use after the settings toggle turned
+  /// on to bridge the gap until onServiceConnected has actually run.
+  static Future<bool> waitForServiceConnected({Duration timeout = const Duration(seconds: 10)}) async {
+    if (await isServiceConnected()) return true;
+    try {
+      await serviceConnectionStream.firstWhere((connected) => connected).timeout(timeout);
+      return true;
+    } on TimeoutException {
+      // The bind broadcast may have fired between the check and the subscribe.
+      return isServiceConnected();
     }
   }
 

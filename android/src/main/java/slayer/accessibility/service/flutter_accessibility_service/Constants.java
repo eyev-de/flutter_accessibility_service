@@ -22,6 +22,8 @@ public class Constants {
     
     public static final String INTENT_SYSTEM_GLOBAL_ACTIONS = "globalSystemAction";
     public static final String BROD_SYSTEM_GLOBAL_ACTIONS = "globalSystemActionBrod";
+    public static final String BROD_SERVICE_CONNECTION = "accessibilityServiceConnectionBrod";
+    public static final String EXTRA_SERVICE_CONNECTED = "connected";
     public static final String SEND_BROADCAST = "SEND_BROADCAST";
     public static final String ACCESSIBILITY_NODE = "ACCESSIBILITY_NODE";
     public static final String SHARED_PREFS_TAG = "SHARED_PREFS_TAG";

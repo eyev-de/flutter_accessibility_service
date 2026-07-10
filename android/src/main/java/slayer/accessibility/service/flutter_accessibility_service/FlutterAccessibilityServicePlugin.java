@@ -6,6 +6,7 @@ import android.accessibilityservice.AccessibilityService;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -47,6 +48,7 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     private static final String CHANNEL_TAG = "x-slayer/accessibility_channel";
     private static final String EVENT_TAG = "x-slayer/accessibility_event";
     private static final String MESSAGE_EVENT_TAG = "x-slayer/accessibility_message";
+    private static final String SERVICE_CONNECTION_EVENT_TAG = "x-slayer/accessibility_service_connection";
     public static final String CACHED_TAG = "cashedAccessibilityEngine";
 
 
@@ -54,6 +56,8 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     private AccessibilityReceiver accessibilityReceiver;
     private EventChannel eventChannel;
     private EventChannel messageEventChannel;
+    private EventChannel serviceConnectionEventChannel;
+    private ServiceConnectionStreamHandler serviceConnectionStreamHandler;
     private MessageReceiver messageReceiver;
     private Context context;
     private Activity mActivity;
@@ -72,6 +76,9 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         eventChannel.setStreamHandler(this);
         messageEventChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), MESSAGE_EVENT_TAG);
         messageEventChannel.setStreamHandler(new MessageStreamHandler());
+        serviceConnectionEventChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), SERVICE_CONNECTION_EVENT_TAG);
+        serviceConnectionStreamHandler = new ServiceConnectionStreamHandler();
+        serviceConnectionEventChannel.setStreamHandler(serviceConnectionStreamHandler);
     }
 
     private final BroadcastReceiver actionsReceiver = new BroadcastReceiver() {
@@ -89,10 +96,41 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
         if (call.method.equals("isAccessibilityPermissionEnabled")) {
             result.success(Utils.isAccessibilitySettingsOn(context));
+        } else if (call.method.equals("isServiceConnected")) {
+            result.success(AccessibilityListener.isServiceConnected());
         } else if (call.method.equals("requestAccessibilityPermission")) {
-            pendingResult = result;  // Only set pendingResult for async operations
+            // A dangling result from an earlier request (user pressed Home in settings,
+            // activity recreated, ...) would otherwise never complete on the Dart side.
+            if (pendingResult != null) {
+                try {
+                    pendingResult.success(Utils.isAccessibilitySettingsOn(context));
+                } catch (Exception e) {
+                    Log.w("AccessibilityPlugin", "Error completing stale permission result: " + e.getMessage());
+                }
+                pendingResult = null;
+            }
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            mActivity.startActivityForResult(intent, REQUEST_CODE_FOR_ACCESSIBILITY);
+            // Ask the settings app to scroll to and highlight our service entry.
+            // AOSP and most OEM settings honor these extras; others ignore them.
+            String component = new ComponentName(context, AccessibilityListener.class).flattenToString();
+            Bundle showArgs = new Bundle();
+            showArgs.putString(":settings:fragment_args_key", component);
+            intent.putExtra(":settings:fragment_args_key", component);
+            intent.putExtra(":settings:show_fragment_args", showArgs);
+            if (mActivity != null) {
+                pendingResult = result;
+                mActivity.startActivityForResult(intent, REQUEST_CODE_FOR_ACCESSIBILITY);
+            } else {
+                // No activity attached (background engine / config change): open settings
+                // without a result round trip; callers poll isAccessibilityPermissionEnabled.
+                try {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(intent);
+                    result.success(Utils.isAccessibilitySettingsOn(context));
+                } catch (Exception e) {
+                    result.error("NO_ACTIVITY", "Could not open accessibility settings: " + e.getMessage(), null);
+                }
+            }
         } else if (call.method.equals("getSystemActions")) {
             if (Utils.isAccessibilitySettingsOn(context)) {
                 IntentFilter filter = new IntentFilter(BROD_SYSTEM_GLOBAL_ACTIONS);
@@ -110,12 +148,9 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             }
         } else if (call.method.equals("performGlobalAction")) {
             Integer actionId = call.argument("action");
-            if (Utils.isAccessibilitySettingsOn(context)) {
-                final Intent i = new Intent(context, AccessibilityListener.class);
-                i.putExtra(INTENT_GLOBAL_ACTION, true);
-                i.putExtra(INTENT_GLOBAL_ACTION_ID, actionId);
-                context.startService(i);
-                result.success(true);
+            AccessibilityListener globalActionService = AccessibilityListener.getServiceInstance();
+            if (globalActionService != null && actionId != null) {
+                result.success(globalActionService.performGlobalAction(actionId));
             } else {
                 result.success(false);
             }
@@ -275,13 +310,12 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         } else if (call.method.equals("click")) {
             Double x = call.argument("x");
             Double y = call.argument("y");
-            if (Utils.isAccessibilitySettingsOn(context)) {
-                final Intent i = new Intent(context, AccessibilityListener.class);
-                i.putExtra(INTENT_CLICK, true);  // Fixed: use INTENT_CLICK instead of INTENT_GLOBAL_ACTION
-                i.putExtra(INTENT_CLICK_X, x);
-                i.putExtra(INTENT_CLICK_Y, y);
-                context.startService(i);
-                result.success(true);
+            // Direct dispatch instead of a startService round trip: the result now
+            // reflects whether the gesture (or its node-action fallback) was accepted,
+            // instead of an optimistic true sent before anything happened.
+            AccessibilityListener clickService = AccessibilityListener.getServiceInstance();
+            if (clickService != null && x != null && y != null) {
+                result.success(clickService.click(x.floatValue(), y.floatValue()));
             } else {
                 result.success(false);
             }
@@ -320,13 +354,9 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         } else if (call.method.equals("longPress")) {
             Double x = call.argument("x");
             Double y = call.argument("y");
-            if (Utils.isAccessibilitySettingsOn(context)) {
-                final Intent i = new Intent(context, AccessibilityListener.class);
-                i.putExtra(INTENT_LONG_PRESS, true);
-                i.putExtra(INTENT_LONG_PRESS_X, x);
-                i.putExtra(INTENT_LONG_PRESS_Y, y);
-                context.startService(i);
-                result.success(true);
+            AccessibilityListener longPressService = AccessibilityListener.getServiceInstance();
+            if (longPressService != null && x != null && y != null) {
+                result.success(longPressService.longPress(x.floatValue(), y.floatValue()));
             } else {
                 result.success(false);
             }
@@ -335,15 +365,9 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             Double y = call.argument("y");
             Double deltaX = call.argument("deltaX");
             Double deltaY = call.argument("deltaY");
-            if (Utils.isAccessibilitySettingsOn(context)) {
-                final Intent i = new Intent(context, AccessibilityListener.class);
-                i.putExtra(INTENT_SCROLL, true);
-                i.putExtra(INTENT_SCROLL_X, x);
-                i.putExtra(INTENT_SCROLL_Y, y);
-                i.putExtra(INTENT_SCROLL_DELTA_X, deltaX);
-                i.putExtra(INTENT_SCROLL_DELTA_Y, deltaY);
-                context.startService(i);
-                result.success(true);
+            AccessibilityListener scrollService = AccessibilityListener.getServiceInstance();
+            if (scrollService != null && x != null && y != null && deltaX != null && deltaY != null) {
+                result.success(scrollService.scroll(x.floatValue(), y.floatValue(), deltaX.floatValue(), deltaY.floatValue()));
             } else {
                 result.success(false);
             }
@@ -447,6 +471,11 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         channel.setMethodCallHandler(null);
         eventChannel.setStreamHandler(null);
         messageEventChannel.setStreamHandler(null);
+        serviceConnectionEventChannel.setStreamHandler(null);
+        if (serviceConnectionStreamHandler != null) {
+            serviceConnectionStreamHandler.onCancel(null);
+            serviceConnectionStreamHandler = null;
+        }
         if (isReceiverRegistered) {
             context.unregisterReceiver(actionsReceiver);
             isReceiverRegistered = false;
@@ -603,6 +632,51 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                 context.unregisterReceiver(messageReceiver);
                 messageReceiver = null;
                 isMessageReceiverRegistered = false;
+            }
+        }
+    }
+
+    // ============================================================================
+    // Service Connection Stream Handler
+    // ============================================================================
+
+    /**
+     * Forwards {@link Constants#BROD_SERVICE_CONNECTION} broadcasts (sent by
+     * {@link AccessibilityListener} on bind/destroy) to Dart as a bool stream.
+     * Registered unconditionally - unlike the event streams this must also work
+     * while the service is NOT yet enabled, so the app can await the first bind.
+     */
+    private class ServiceConnectionStreamHandler implements EventChannel.StreamHandler {
+        private BroadcastReceiver receiver;
+
+        @SuppressLint("UnspecifiedRegisterReceiverFlag")
+        @Override
+        public void onListen(Object arguments, EventChannel.EventSink events) {
+            receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    events.success(intent.getBooleanExtra(EXTRA_SERVICE_CONNECTED, false));
+                }
+            };
+            IntentFilter filter = new IntentFilter(BROD_SERVICE_CONNECTION);
+            // The broadcast is app-internal (sender calls setPackage), so keep the
+            // receiver unexported where the API allows expressing that.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                context.registerReceiver(receiver, filter);
+            }
+        }
+
+        @Override
+        public void onCancel(Object arguments) {
+            if (receiver != null) {
+                try {
+                    context.unregisterReceiver(receiver);
+                } catch (Exception e) {
+                    Log.w("AccessibilityPlugin", "Error unregistering service connection receiver: " + e.getMessage());
+                }
+                receiver = null;
             }
         }
     }

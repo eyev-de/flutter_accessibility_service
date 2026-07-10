@@ -476,6 +476,30 @@ public class AccessibilityListener extends AccessibilityService {
     }
 
 
+    /**
+     * The bound service instance, or null when the service is not connected.
+     * Distinct from the settings toggle: Settings.Secure flips before
+     * onServiceConnected has run, and stays on if the service crashes.
+     */
+    public static AccessibilityListener getServiceInstance() {
+        return serviceInstance;
+    }
+
+    public static boolean isServiceConnected() {
+        return serviceInstance != null;
+    }
+
+    private void broadcastServiceConnection(boolean connected) {
+        try {
+            Intent intent = new Intent(BROD_SERVICE_CONNECTION);
+            intent.setPackage(getPackageName());
+            intent.putExtra(EXTRA_SERVICE_CONNECTED, connected);
+            sendBroadcast(intent);
+        } catch (Exception e) {
+            Log.w("AccessibilityListener", "Failed to broadcast service connection state: " + e.getMessage());
+        }
+    }
+
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP_MR1)
     @Override
     protected void onServiceConnected() {
@@ -527,6 +551,7 @@ public class AccessibilityListener extends AccessibilityService {
             Log.e("AccessibilityListener", "Error in onServiceConnected: " + e.getMessage(), e);
             // Don't rethrow - allow the service to continue running
         }
+        broadcastServiceConnection(true);
     }
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP_MR1)
@@ -682,9 +707,17 @@ public class AccessibilityListener extends AccessibilityService {
         removeOverlay();
         removeAllOverlays();
         serviceInstance = null;
+        // Null the remaining statics too: a stale WindowManager from a dead service
+        // would make the next createOverlay attempt fail with a BadTokenException
+        // instead of a clean "service not connected".
+        mWindowManager = null;
+        mOverlayView = null;
+        engineGroup = null;
+        isOverlayShown = false;
         SharedPreferences sharedPreferences = getSharedPreferences(SHARED_PREFS_TAG, MODE_PRIVATE);
         SharedPreferences.Editor editor = sharedPreferences.edit();
         editor.remove(ACCESSIBILITY_NODE).apply();
+        broadcastServiceConnection(false);
     }
 
     @Override
@@ -1075,18 +1108,24 @@ public class AccessibilityListener extends AccessibilityService {
             .build();
     }
 
-    public void click(float x, float y) {
+    /**
+     * Returns true when the gesture was accepted for dispatch (or the node-action
+     * fallback succeeded), false when it was rejected outright. Completion is not
+     * awaited - a cancelled gesture still triggers the node-action fallback
+     * asynchronously via the GestureResultCallback.
+     */
+    public boolean click(float x, float y) {
         try {
             // Validate coordinates
             if (x < 0 || y < 0) {
                 Log.w("AccessibilityListener", "Invalid click coordinates: x=" + x + ", y=" + y);
-                return;
+                return false;
             }
 
             // Check if service is connected
             if (serviceInstance == null) {
                 Log.e("AccessibilityListener", "Service not connected - cannot perform click");
-                return;
+                return false;
             }
 
             Log.d("AccessibilityListener", "Performing direct click at (" + x + ", " + y + ")");
@@ -1119,25 +1158,28 @@ public class AccessibilityListener extends AccessibilityService {
 
             if (!success) {
                 Log.w("AccessibilityListener", "Failed to dispatch click gesture at (" + x + ", " + y + ") - falling back to node ACTION_CLICK");
-                performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_CLICK);
+                return performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_CLICK);
             }
+            return true;
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error performing click at (" + x + ", " + y + ")", e);
+            return false;
         }
     }
 
-    public void longPress(float x, float y) {
+    /** Same result semantics as {@link #click(float, float)}. */
+    public boolean longPress(float x, float y) {
         try {
             // Validate coordinates
             if (x < 0 || y < 0) {
                 Log.w("AccessibilityListener", "Invalid long press coordinates: x=" + x + ", y=" + y);
-                return;
+                return false;
             }
 
             // Check if service is connected
             if (serviceInstance == null) {
                 Log.e("AccessibilityListener", "Service not connected - cannot perform long press");
-                return;
+                return false;
             }
 
             Log.d("AccessibilityListener", "Performing long press at (" + x + ", " + y + ")");
@@ -1167,25 +1209,28 @@ public class AccessibilityListener extends AccessibilityService {
 
             if (!success) {
                 Log.w("AccessibilityListener", "Failed to dispatch long press gesture at (" + x + ", " + y + ") - falling back to node ACTION_LONG_CLICK");
-                performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_LONG_CLICK);
+                return performActionAtPoint((int) x, (int) y, AccessibilityNodeInfo.ACTION_LONG_CLICK);
             }
+            return true;
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error performing long press at (" + x + ", " + y + ")", e);
+            return false;
         }
     }
 
-    public void scroll(float x, float y, float deltaX, float deltaY) {
+    /** Returns true when the scroll gesture was accepted for dispatch. */
+    public boolean scroll(float x, float y, float deltaX, float deltaY) {
         try {
             // Validate coordinates
             if (x < 0 || y < 0) {
                 Log.w("AccessibilityListener", "Invalid scroll coordinates: x=" + x + ", y=" + y);
-                return;
+                return false;
             }
 
             // Check if service is connected
             if (serviceInstance == null) {
                 Log.e("AccessibilityListener", "Service not connected - cannot perform scroll");
-                return;
+                return false;
             }
 
             Log.d("AccessibilityListener", "Performing scroll at (" + x + ", " + y + ") with delta (" + deltaX + ", " + deltaY + ")");
@@ -1206,8 +1251,10 @@ public class AccessibilityListener extends AccessibilityService {
             if (!success) {
                 Log.w("AccessibilityListener", "Failed to dispatch scroll gesture at (" + x + ", " + y + ")");
             }
+            return success;
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error performing scroll at (" + x + ", " + y + ")", e);
+            return false;
         }
     }
 
