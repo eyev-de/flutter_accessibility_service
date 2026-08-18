@@ -220,46 +220,37 @@ public class AccessibilityListener extends AccessibilityService {
     private static void collectInteractive(AccessibilityNodeInfo node,
             List<Map<String, Object>> out, int depth, int windowType) {
         if (node == null || depth > maxDepth) return;
-        // Roots are owned by getWindows()/getRootInActiveWindow(); only recycle nodes we obtain
-        // ourselves via getChild() (depth > 0).
-        boolean recycle = depth != 0;
-        try {
-            if (node.isVisibleToUser() && node.isEnabled()) {
-                boolean actionable = node.isClickable() || node.isLongClickable()
-                        || node.isScrollable() || node.isEditable();
-                if (actionable) {
-                    Rect b = new Rect();
-                    node.getBoundsInScreen(b);
-                    if (b.width() > 0 && b.height() > 0) {
-                        Map<String, Object> m = new HashMap<>();
-                        m.put("bounds", getBoundingPoints(b));
-                        m.put("isClickable", node.isClickable());
-                        m.put("isLongClickable", node.isLongClickable());
-                        m.put("isScrollable", node.isScrollable());
-                        m.put("isEditable", node.isEditable());
-                        m.put("isFocusable", node.isFocusable());
-                        m.put("text", node.getText() != null ? node.getText().toString() : null);
-                        m.put("contentDescription", node.getContentDescription() != null
-                                ? node.getContentDescription().toString() : null);
-                        m.put("viewId", node.getViewIdResourceName());
-                        m.put("className", node.getClassName() != null ? node.getClassName().toString() : null);
-                        m.put("windowType", windowType);
-                        String idBase = node.getViewIdResourceName() != null
-                                ? node.getViewIdResourceName()
-                                : (node.getClassName() != null ? node.getClassName().toString() : "node");
-                        m.put("id", idBase + "@" + b.left + "," + b.top + "," + b.right + "," + b.bottom);
-                        out.add(m);
-                    }
+        if (node.isVisibleToUser() && node.isEnabled()) {
+            boolean actionable = node.isClickable() || node.isLongClickable()
+                    || node.isScrollable() || node.isEditable();
+            if (actionable) {
+                Rect b = new Rect();
+                node.getBoundsInScreen(b);
+                if (b.width() > 0 && b.height() > 0) {
+                    Map<String, Object> m = new HashMap<>();
+                    m.put("bounds", getBoundingPoints(b));
+                    m.put("isClickable", node.isClickable());
+                    m.put("isLongClickable", node.isLongClickable());
+                    m.put("isScrollable", node.isScrollable());
+                    m.put("isEditable", node.isEditable());
+                    m.put("isFocusable", node.isFocusable());
+                    m.put("text", node.getText() != null ? node.getText().toString() : null);
+                    m.put("contentDescription", node.getContentDescription() != null
+                            ? node.getContentDescription().toString() : null);
+                    m.put("viewId", node.getViewIdResourceName());
+                    m.put("className", node.getClassName() != null ? node.getClassName().toString() : null);
+                    m.put("windowType", windowType);
+                    String idBase = node.getViewIdResourceName() != null
+                            ? node.getViewIdResourceName()
+                            : (node.getClassName() != null ? node.getClassName().toString() : "node");
+                    m.put("id", idBase + "@" + b.left + "," + b.top + "," + b.right + "," + b.bottom);
+                    out.add(m);
                 }
             }
-            for (int i = 0; i < node.getChildCount(); i++) {
-                AccessibilityNodeInfo child = node.getChild(i);
-                if (child != null) collectInteractive(child, out, depth + 1, windowType);
-            }
-        } finally {
-            if (recycle) {
-                try { node.recycle(); } catch (Exception ignore) {}
-            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) collectInteractive(child, out, depth + 1, windowType);
         }
     }
 
@@ -382,6 +373,12 @@ public class AccessibilityListener extends AccessibilityService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // Null on START_STICKY restarts after a process kill (the service is
+        // also "started", not only bound, once the first click command arrives
+        // via startService).
+        if (intent == null) {
+            return START_STICKY;
+        }
         boolean globalAction = intent.getBooleanExtra(INTENT_GLOBAL_ACTION, false);
         boolean systemActions = intent.getBooleanExtra(INTENT_SYSTEM_GLOBAL_ACTIONS, false);
         boolean click = intent.getBooleanExtra(INTENT_CLICK, false);
@@ -552,6 +549,13 @@ public class AccessibilityListener extends AccessibilityService {
             // Don't rethrow - allow the service to continue running
         }
         broadcastServiceConnection(true);
+        // Notify the host app that the service (incl. WindowManager + engine
+        // group) is up. The host uses this to start the process-wide USB/EAP
+        // transport and to spawn the overlay engines - eye control recovers
+        // from boot / process kills without the main activity ever launching.
+        // (The former relaunch-the-app self-heal is gone: the overlays are
+        // self-sufficient and the main app is just a settings UI.)
+        new Handler(Looper.getMainLooper()).post(() -> safeNotifyServiceReady(this));
     }
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP_MR1)
@@ -803,6 +807,38 @@ public class AccessibilityListener extends AccessibilityService {
 
     public static void setOverlayEngineConfigurator(OverlayEngineConfigurator configurator) {
         overlayEngineConfigurator = configurator;
+    }
+
+    /**
+     * Notified on the main thread once the service is connected and the overlay
+     * spawn machinery (WindowManager + FlutterEngineGroup) is initialized. The
+     * host app uses this to bring up process-wide infrastructure that must not
+     * depend on any activity (USB/EAP transport, later overlay spawning).
+     * Set it from Application.onCreate; if the service is already connected
+     * when the listener is set, it fires immediately (posted to the main looper).
+     */
+    public interface ServiceReadyListener {
+        void onServiceReady(Context serviceContext);
+    }
+
+    private static volatile ServiceReadyListener serviceReadyListener;
+
+    public static void setServiceReadyListener(ServiceReadyListener listener) {
+        serviceReadyListener = listener;
+        AccessibilityListener service = serviceInstance;
+        if (listener != null && service != null) {
+            new Handler(Looper.getMainLooper()).post(() -> safeNotifyServiceReady(service));
+        }
+    }
+
+    private static void safeNotifyServiceReady(AccessibilityListener service) {
+        ServiceReadyListener listener = serviceReadyListener;
+        if (listener == null || service == null) return;
+        try {
+            listener.onServiceReady(service.getApplicationContext());
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "ServiceReadyListener threw: " + e.getMessage(), e);
+        }
     }
 
     public static FlutterEngine createEngineForOverlay(Context context, String entrypoint) {
@@ -1062,6 +1098,25 @@ public class AccessibilityListener extends AccessibilityService {
         Log.d("AccessibilityListener", "All overlays removed");
     }
 
+    /**
+     * Hide only the overlays hosted by the given engine messenger. Called from
+     * the plugin's onDetachedFromEngine so a dying engine's FlutterView is
+     * detached (AccessibilityBridge NPE protection) WITHOUT sweeping away the
+     * other engines' overlays - the main engine's death must leave the menu
+     * and pointer overlays running.
+     */
+    public static void hideOverlaysForMessenger(io.flutter.plugin.common.BinaryMessenger messenger) {
+        for (AccessibilityOverlay overlay : activeOverlays.values()) {
+            if (overlay.isHostedByMessenger(messenger)) {
+                try {
+                    hideOverlayById(overlay.getOverlayId());
+                } catch (Exception e) {
+                    Log.w("AccessibilityListener", "Error hiding overlay " + overlay.getOverlayId() + " during engine detach: " + e.getMessage());
+                }
+            }
+        }
+    }
+
     public static boolean refreshEngineById(int overlayId) {
         AccessibilityOverlay overlay = activeOverlays.get(overlayId);
         if (overlay != null) {
@@ -1280,7 +1335,32 @@ public class AccessibilityListener extends AccessibilityService {
     public static boolean sendMessage(int targetOverlayId, String method, String jsonMessage) {
         return sendMessage(targetOverlayId, method, (Object) jsonMessage, -1);
     }
-    
+
+    /**
+     * Reports whether a message actually reached an overlay's Dart method handler.
+     * Distinct from sendMessage's boolean, which only says the Java-side channel
+     * existed: a MethodChannel invoke before the Dart handler is registered is
+     * silently dropped (the reply is notImplemented).
+     */
+    public interface MessageDeliveryCallback {
+        void onResult(boolean delivered);
+    }
+
+    /**
+     * Send a message to an overlay and report via {@code callback} whether the
+     * overlay's Dart handler actually processed it. Callers that must not lose
+     * the message (e.g. the host app's foreground-state seed for freshly
+     * spawned overlay engines) retry on delivered=false. Overlay targets only.
+     */
+    public static void sendMessageForResult(int targetOverlayId, String method, Object arguments, MessageDeliveryCallback callback) {
+        AccessibilityOverlay overlay = activeOverlays.get(targetOverlayId);
+        if (overlay == null) {
+            callback.onResult(false);
+            return;
+        }
+        overlay.sendMessageForResult(method, arguments, -1, callback);
+    }
+
     /**
      * Send message to main app (index 0)
      */

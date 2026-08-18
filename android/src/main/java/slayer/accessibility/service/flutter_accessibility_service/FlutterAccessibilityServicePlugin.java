@@ -19,9 +19,12 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 import io.flutter.FlutterInjector;
@@ -66,6 +69,20 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     private boolean isMessageReceiverRegistered = false;
     private Result pendingResult;
     final int REQUEST_CODE_FOR_ACCESSIBILITY = 167;
+
+    // Accessibility-tree traversal does one binder round trip per getRoot()/getChild()
+    // call and can hold its thread for tens to hundreds of ms on content-rich screens.
+    // All cross-engine message traffic (60Hz gaze forwarding to the overlay engines)
+    // shares the platform main thread, so traversals must never run there.
+    // Static and single-threaded: the plugin attaches once per engine (main app plus
+    // each overlay), and one shared worker serializes traversals instead of letting
+    // concurrent fetches pile up binder calls.
+    private static final ExecutorService nodeQueryExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "a11y-node-query");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final android.os.Handler mainThreadHandler = new android.os.Handler(android.os.Looper.getMainLooper());
 
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
@@ -286,6 +303,14 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         } else if (call.method.equals("removeAllOverlays")) {
             AccessibilityListener.removeAllOverlays();
             result.success(true);
+        } else if (call.method.equals("setUserQuitFlag")) {
+            // Gate for the service's self-heal relaunch: while set, a service
+            // rebind does not restart the main app. Written via the app context
+            // so it works regardless of whether the service is connected.
+            Boolean value = call.argument("value");
+            context.getSharedPreferences(SHARED_PREFS_TAG, Context.MODE_PRIVATE)
+                    .edit().putBoolean(USER_QUIT_FLAG, value != null && value).apply();
+            result.success(true);
         } else if (call.method.equals("refreshOverlayEngine")) {
             Integer overlayId = call.argument("overlayId");
             if (overlayId != null) {
@@ -333,9 +358,21 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             }
         } else if (call.method.equals("getInteractiveNodes")) {
             if (!Utils.isAccessibilitySettingsOn(context)) {
-                result.success(new java.util.ArrayList<>());
+                result.success(new ArrayList<>());
             } else {
-                result.success(AccessibilityListener.getInteractiveNodes());
+                // AccessibilityNodeInfo getters are plain binder transactions and safe off
+                // the main thread; only the Result must be completed back on it.
+                nodeQueryExecutor.execute(() -> {
+                    List<Map<String, Object>> nodes;
+                    try {
+                        nodes = AccessibilityListener.getInteractiveNodes();
+                    } catch (Throwable t) {
+                        Log.e("AccessibilityPlugin", "getInteractiveNodes failed off-thread: " + t.getMessage());
+                        nodes = new ArrayList<>();
+                    }
+                    final List<Map<String, Object>> out = nodes;
+                    mainThreadHandler.post(() -> result.success(out));
+                });
             }
         } else if (call.method.equals("consumeNodesDirty")) {
             result.success(AccessibilityListener.consumeNodesDirty());
@@ -430,21 +467,15 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     @Override
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
         Log.d("AccessibilityPlugin", "onDetachedFromEngine: cleaning up overlays and engines");
-        
-        // CRITICAL: Hide and detach all overlays before the engine is destroyed
-        // This prevents AccessibilityBridge NPE during hot restart
+
+        // Hide/detach ONLY overlays hosted by the engine that is detaching
+        // (AccessibilityBridge NPE protection during hot restart). The old
+        // hide-EVERYTHING sweep also ran when the MAIN engine died - exactly
+        // the moment the overlay engines must keep running now that they own
+        // their own EAP subscriptions (closing the app blanked the menu bar
+        // and pointer).
         try {
-            // Hide all active overlays - this will detach them from their engines
-            for (Map<String, Object> info : AccessibilityListener.getAllOverlaysInfo()) {
-                Integer overlayId = (Integer) info.get("id");
-                if (overlayId != null) {
-                    try {
-                        AccessibilityListener.hideOverlayById(overlayId);
-                    } catch (Exception e) {
-                        Log.w("AccessibilityPlugin", "Error hiding overlay " + overlayId + " during detach: " + e.getMessage());
-                    }
-                }
-            }
+            AccessibilityListener.hideOverlaysForMessenger(binding.getBinaryMessenger());
         } catch (Exception e) {
             Log.w("AccessibilityPlugin", "Error cleaning up overlays during detach: " + e.getMessage());
         }

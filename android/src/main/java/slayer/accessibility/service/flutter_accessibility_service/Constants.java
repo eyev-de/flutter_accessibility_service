@@ -27,4 +27,8 @@ public class Constants {
     public static final String SEND_BROADCAST = "SEND_BROADCAST";
     public static final String ACCESSIBILITY_NODE = "ACCESSIBILITY_NODE";
     public static final String SHARED_PREFS_TAG = "SHARED_PREFS_TAG";
+    // Persisted "the user deliberately quit the app" marker. While set, the
+    // service's self-heal must NOT relaunch the main activity after a rebind.
+    // Set from Dart before a deliberate quit; cleared on every manual app launch.
+    public static final String USER_QUIT_FLAG = "userQuitFlag";
 }

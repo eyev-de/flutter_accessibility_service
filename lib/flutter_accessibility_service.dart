@@ -530,6 +530,20 @@ class FlutterAccessibilityService {
     }
   }
 
+  /// Persisted gate for the accessibility service's self-heal relaunch.
+  ///
+  /// While `true`, a service rebind (boot, process kill, app update) does NOT
+  /// relaunch the main app. Set it right before a deliberate app quit and
+  /// clear it on every manual app launch so the self-heal is armed again.
+  static Future<bool> setUserQuitFlag(bool value) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('setUserQuitFlag', {'value': value}) ?? false;
+    } on PlatformException catch (error) {
+      log("Error setting user quit flag: $error");
+      return false;
+    }
+  }
+
   /// Performs a single tap gesture at the specified coordinates.
   ///
   /// This simulates a normal touch tap on the Android screen.

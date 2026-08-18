@@ -122,6 +122,16 @@ public class AccessibilityOverlay {
                             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
     }
     
+    /**
+     * Whether this overlay's Flutter engine communicates through the given
+     * messenger. Used to scope engine-teardown cleanup to the right overlay.
+     */
+    public boolean isHostedByMessenger(io.flutter.plugin.common.BinaryMessenger messenger) {
+        if (flutterEngine == null || messenger == null) return false;
+        return flutterEngine.getDartExecutor() == messenger
+                || flutterEngine.getDartExecutor().getBinaryMessenger() == messenger;
+    }
+
     public void attachFlutterEngine(FlutterEngine engine) {
         attachFlutterEngine(engine, null);
     }
@@ -188,7 +198,10 @@ public class AccessibilityOverlay {
     }
     
     public boolean show() {
-        if (isVisible || windowManager == null || flutterView == null) {
+        if (isVisible) {
+            return true; // idempotent: already in the requested state
+        }
+        if (windowManager == null || flutterView == null) {
             return false;
         }
         
@@ -237,8 +250,12 @@ public class AccessibilityOverlay {
     }
     
     public boolean hide() {
-        if (!isVisible || windowManager == null || flutterView == null) {
-            return false;
+        if (!isVisible) {
+            return true; // idempotent: already in the requested state
+        }
+        if (windowManager == null || flutterView == null) {
+            isVisible = false;
+            return true; // no view to hide - effectively hidden
         }
         
         try {
@@ -607,7 +624,7 @@ public class AccessibilityOverlay {
             
             messageChannel.setMethodCallHandler((call, result) -> {
                 // Handle direct method invocations (like desktop_multi_window pattern)
-                Map<String, Object> args = (Map<String, Object>) call.arguments;
+                Map<String, Object> args = call.arguments();
                 if (args != null) {
                     Integer targetOverlayId = (Integer) args.get("targetOverlayId");
                     Object arguments = args.get("arguments");
@@ -657,6 +674,48 @@ public class AccessibilityOverlay {
      */
     public boolean sendMessage(String method, Object arguments) {
         return sendMessage(method, arguments, -1); // Unknown source
+    }
+
+    /**
+     * Send a message and report whether this overlay's Dart handler actually
+     * processed it. The engine may still be booting when the message is sent
+     * (no Dart handler registered yet), in which case the invoke resolves to
+     * notImplemented and delivered=false - callers retry until true.
+     */
+    public void sendMessageForResult(String method, Object arguments, int fromOverlayId, AccessibilityListener.MessageDeliveryCallback callback) {
+        if (messageChannel == null) {
+            callback.onResult(false);
+            return;
+        }
+
+        Map<String, Object> messageData = new HashMap<>();
+        messageData.put("fromOverlayId", fromOverlayId);
+        messageData.put("method", method);
+        messageData.put("arguments", arguments);
+
+        runOnMain(() -> {
+            try {
+                messageChannel.invokeMethod("receiveMessage", messageData, new MethodChannel.Result() {
+                    @Override
+                    public void success(Object result) {
+                        callback.onResult(true);
+                    }
+
+                    @Override
+                    public void error(String errorCode, String errorMessage, Object errorDetails) {
+                        callback.onResult(false);
+                    }
+
+                    @Override
+                    public void notImplemented() {
+                        callback.onResult(false);
+                    }
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending message for result to overlay " + overlayId + ": " + e.getMessage(), e);
+                callback.onResult(false);
+            }
+        });
     }
     
     /**
