@@ -181,7 +181,8 @@ public class AccessibilityOverlay {
                 }
 
                 // Detach Flutter view from engine
-                if (flutterView != null && flutterEngine != null) {
+                final FlutterEngine dyingEngine = this.flutterEngine;
+                if (flutterView != null && dyingEngine != null) {
                     try {
                         flutterView.detachFromFlutterEngine();
                         Log.d(TAG, "FlutterEngine detached from overlay: " + overlayId);
@@ -191,6 +192,27 @@ public class AccessibilityOverlay {
                 }
 
                 this.flutterEngine = null;
+
+                // Destroy the engine - dropping the reference is not enough.
+                // An undestroyed engine keeps its isolate running and never
+                // sends onDetachedFromEngine, so every plugin it holds keeps
+                // its process-wide resources forever (flutter_skyle's native
+                // callback subscriber is one: its 8-slot table filled up after
+                // a few overlay teardowns and the next overlay spawn died with
+                // "Failed to add callback subscriber (error: -2)").
+                // Posted, never inline: destroy() drives plugin detach, which
+                // re-enters AccessibilityListener while it may be iterating
+                // its overlay map (removeAllOverlays).
+                if (dyingEngine != null) {
+                    main.post(() -> {
+                        try {
+                            dyingEngine.destroy();
+                            Log.d(TAG, "FlutterEngine destroyed for overlay: " + overlayId);
+                        } catch (Exception destroyE) {
+                            Log.w(TAG, "Error destroying Flutter engine for overlay " + overlayId + ": " + destroyE.getMessage());
+                        }
+                    });
+                }
             } catch (Exception e) {
                 Log.e(TAG, "Error during Flutter engine detachment: " + e.getMessage(), e);
             }
