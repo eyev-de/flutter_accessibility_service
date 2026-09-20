@@ -1,3 +1,9 @@
+## 1.1.0
+
+- Add `swipe` gesture injection (one stroke from A to B)
+- Add `dragAndDrop` gesture injection (long press hold at A, glide to B, release)
+- Add `longPressTimeoutMs` to query the system long press timeout
+
 ## 1.0.0
 
 - Improve nodes fetching

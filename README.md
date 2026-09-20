@@ -173,6 +173,36 @@ Perform actions with `Accessibility Service`
 
 For more details about the action check [here](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo.AccessibilityAction)
 
+#### Gesture injection
+
+Synthesized touch gestures dispatched by the service. All coordinates are **physical
+screen pixels**.
+
+```dart
+/// Single tap / long press at a point
+await FlutterAccessibilityService.click(100, 200);
+await FlutterAccessibilityService.longPress(100, 200);
+
+/// Scroll by a delta from a point
+await FlutterAccessibilityService.scroll(200, 300, 0, 100);
+
+/// The system long press timeout in ms (-1 when unavailable).
+/// Follows the user's "Touch & hold delay" accessibility setting.
+final int timeout = await FlutterAccessibilityService.longPressTimeoutMs();
+
+/// One stroke from (x1, y1) to (x2, y2)
+final swiped = await FlutterAccessibilityService.swipe(100, 800, 100, 200, durationMs: 250);
+
+/// Hold at (x1, y1) until the app enters drag mode, glide to (x2, y2), release.
+/// holdMs defaults to the system long press timeout plus a small margin.
+final dragged = await FlutterAccessibilityService.dragAndDrop(300, 500, 300, 1200, glideMs: 500);
+```
+
+`swipe` and `dragAndDrop` resolve to `true` only when the gesture actually **completed** -
+not merely when it was accepted for dispatch - so a cancelled or rejected gesture yields
+`false`. Unlike `click` / `longPress` there is no node-level fallback for them: a drag has
+no `AccessibilityNodeInfo` equivalent.
+
 #### Accessibility Overlay
 
 This will help to cover the window with an overlay by an accessibility service

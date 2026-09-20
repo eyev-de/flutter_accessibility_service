@@ -16,9 +16,11 @@ import android.graphics.Path;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.util.LruCache;
 import android.view.Gravity;
+import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -1310,6 +1312,194 @@ public class AccessibilityListener extends AccessibilityService {
         } catch (Exception e) {
             Log.e("AccessibilityListener", "Error performing scroll at (" + x + ", " + y + ")", e);
             return false;
+        }
+    }
+
+    /**
+     * Completion callback for the two-point gesture APIs ({@link #swipe} / {@link #dragAndDrop}).
+     * Reports whether the gesture completed, not merely whether it was accepted.
+     */
+    public interface GestureCompletion {
+        void onResult(boolean completed);
+    }
+
+    /**
+     * Extra hold time added on top of the system long press timeout before a drag
+     * starts moving. The timeout itself follows the user's "Touch and hold delay"
+     * setting, so it must never be replaced by a hardcoded value.
+     */
+    private static final long LONG_PRESS_MARGIN_MS = 600;
+
+    /**
+     * One continuous stroke from (x1, y1) to (x2, y2) over durationMs.
+     * Unlike {@link #scroll} this reports completion asynchronously through cb.
+     */
+    public void swipe(float x1, float y1, float x2, float y2, long durationMs, GestureCompletion cb) {
+        try {
+            // Validate coordinates
+            if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) {
+                Log.w("AccessibilityListener", "Invalid swipe coordinates: (" + x1 + ", " + y1 + ") -> (" + x2 + ", " + y2 + ")");
+                cb.onResult(false);
+                return;
+            }
+
+            // Check if service is connected
+            if (serviceInstance == null) {
+                Log.e("AccessibilityListener", "Service not connected - cannot perform swipe");
+                cb.onResult(false);
+                return;
+            }
+
+            Log.d("AccessibilityListener", "Performing swipe (" + x1 + ", " + y1 + ") -> (" + x2 + ", " + y2 + ") over " + durationMs + "ms");
+
+            Path swipePath = new Path();
+            swipePath.moveTo(x1, y1);
+            swipePath.lineTo(x2, y2);
+
+            GestureDescription.StrokeDescription swipeStroke = new GestureDescription.StrokeDescription(swipePath, 0, Math.max(1, durationMs));
+            GestureDescription.Builder swipeBuilder = new GestureDescription.Builder();
+            swipeBuilder.addStroke(swipeStroke);
+
+            boolean dispatched = dispatchGesture(swipeBuilder.build(), new AccessibilityService.GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    Log.d("AccessibilityListener", "Swipe completed successfully at (" + x2 + ", " + y2 + ")");
+                    cb.onResult(true);
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    Log.w("AccessibilityListener", "Swipe gesture was cancelled at (" + x1 + ", " + y1 + ")");
+                    cb.onResult(false);
+                }
+            }, null);
+
+            if (!dispatched) {
+                Log.w("AccessibilityListener", "Failed to dispatch swipe gesture at (" + x1 + ", " + y1 + ")");
+                cb.onResult(false);
+            }
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error performing swipe at (" + x1 + ", " + y1 + ")", e);
+            cb.onResult(false);
+        }
+    }
+
+    /**
+     * Press and hold at (x1, y1) until the target app enters drag mode, then glide to
+     * (x2, y2) and release. Implemented as a continued stroke: the hold stroke is
+     * dispatched with willContinue, and its continuation carries the movement.
+     *
+     * holdMs <= 0 means "use the system long press timeout plus {@link #LONG_PRESS_MARGIN_MS}".
+     * There is no node-level fallback - a drag has no AccessibilityNodeInfo equivalent.
+     */
+    public void dragAndDrop(float x1, float y1, float x2, float y2, long holdMs, long glideMs, GestureCompletion cb) {
+        try {
+            // Validate coordinates
+            if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) {
+                Log.w("AccessibilityListener", "Invalid drag coordinates: (" + x1 + ", " + y1 + ") -> (" + x2 + ", " + y2 + ")");
+                cb.onResult(false);
+                return;
+            }
+
+            // Check if service is connected
+            if (serviceInstance == null) {
+                Log.e("AccessibilityListener", "Service not connected - cannot perform drag and drop");
+                cb.onResult(false);
+                return;
+            }
+
+            final long hold = holdMs > 0 ? holdMs : ViewConfiguration.getLongPressTimeout() + LONG_PRESS_MARGIN_MS;
+
+            Log.d("AccessibilityListener", "Performing drag and drop (" + x1 + ", " + y1 + ") -> (" + x2 + ", " + y2 + ") hold " + hold + "ms glide " + glideMs + "ms");
+
+            // Both paths are built from the same coordinates: the injector rejects a
+            // continuation whose first point does not match where the previous stroke ended.
+            Path holdPath = new Path();
+            holdPath.moveTo(x1, y1);
+            Path glidePath = new Path();
+            glidePath.moveTo(x1, y1);
+            glidePath.lineTo(x2, y2);
+
+            final GestureDescription.StrokeDescription holdStroke =
+                    new GestureDescription.StrokeDescription(holdPath, 0, Math.max(1, hold), true);
+            // startTime is relative to the new gesture, and continueStroke must be called
+            // on the original stroke object.
+            final GestureDescription.StrokeDescription glideStroke =
+                    holdStroke.continueStroke(glidePath, 0, Math.max(1, glideMs), false);
+
+            GestureDescription.Builder holdBuilder = new GestureDescription.Builder();
+            holdBuilder.addStroke(holdStroke);
+
+            final Runnable dispatchGlide = () -> {
+                GestureDescription.Builder glideBuilder = new GestureDescription.Builder();
+                glideBuilder.addStroke(glideStroke);
+
+                boolean glideDispatched = dispatchGesture(glideBuilder.build(), new AccessibilityService.GestureResultCallback() {
+                    @Override
+                    public void onCompleted(GestureDescription gestureDescription) {
+                        Log.d("AccessibilityListener", "Drag and drop completed successfully at (" + x2 + ", " + y2 + ")");
+                        cb.onResult(true);
+                    }
+
+                    @Override
+                    public void onCancelled(GestureDescription gestureDescription) {
+                        Log.w("AccessibilityListener", "Drag glide was cancelled at (" + x2 + ", " + y2 + ")");
+                        cb.onResult(false);
+                    }
+                }, null);
+
+                if (!glideDispatched) {
+                    Log.w("AccessibilityListener", "Failed to dispatch drag glide - releasing the pointer at (" + x1 + ", " + y1 + ")");
+                    releaseDragPointer(holdStroke, x1, y1);
+                    cb.onResult(false);
+                }
+            };
+
+            final long holdStartedAt = SystemClock.uptimeMillis();
+            boolean dispatched = dispatchGesture(holdBuilder.build(), new AccessibilityService.GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    // A stationary stroke injects nothing but its ACTION_DOWN (MotionEventInjector emits
+                    // ACTION_MOVE only for points that changed), and the injector reports completion right
+                    // after the LAST injected event - so this fires immediately after the press, not after
+                    // the stroke's nominal duration. The pointer stays down waiting for the continuation
+                    // (there is no timeout for that), so the hold has to be timed here before the glide
+                    // is dispatched. Dispatching it from this callback directly made the drag a swipe.
+                    long remaining = Math.max(0, hold - (SystemClock.uptimeMillis() - holdStartedAt));
+                    new Handler(Looper.getMainLooper()).postDelayed(dispatchGlide, remaining);
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    // The pointer is already up, so a continuation would be rejected.
+                    Log.w("AccessibilityListener", "Drag hold was cancelled at (" + x1 + ", " + y1 + ")");
+                    cb.onResult(false);
+                }
+            }, null);
+
+            if (!dispatched) {
+                Log.w("AccessibilityListener", "Failed to dispatch drag hold gesture at (" + x1 + ", " + y1 + ")");
+                cb.onResult(false);
+            }
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error performing drag and drop at (" + x1 + ", " + y1 + ")", e);
+            cb.onResult(false);
+        }
+    }
+
+    /**
+     * Terminates a drag whose glide could not be dispatched with a 1ms continuation at
+     * the hold position, so the injected pointer never stays down.
+     */
+    private void releaseDragPointer(GestureDescription.StrokeDescription holdStroke, float x, float y) {
+        try {
+            Path releasePath = new Path();
+            releasePath.moveTo(x, y);
+            GestureDescription.Builder releaseBuilder = new GestureDescription.Builder();
+            releaseBuilder.addStroke(holdStroke.continueStroke(releasePath, 0, 1, false));
+            dispatchGesture(releaseBuilder.build(), null, null);
+        } catch (Exception e) {
+            Log.e("AccessibilityListener", "Error releasing drag pointer at (" + x + ", " + y + ")", e);
         }
     }
 

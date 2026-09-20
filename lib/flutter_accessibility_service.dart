@@ -653,6 +653,87 @@ class FlutterAccessibilityService {
     }
   }
 
+  /// The system long press timeout (`ViewConfiguration.getLongPressTimeout()`) in
+  /// milliseconds, or `-1` when it cannot be queried.
+  ///
+  /// This honours the user's "Touch & hold delay" accessibility setting, so callers
+  /// that need to hold before dragging can size their hold from the real device
+  /// value instead of assuming the 500ms default.
+  static Future<int> longPressTimeoutMs() async {
+    try {
+      return await _methodChannel.invokeMethod<int>('getLongPressTimeout') ?? -1;
+    } on PlatformException catch (error) {
+      log("Error getting long press timeout: $error");
+      return -1;
+    }
+  }
+
+  /// Performs a swipe gesture: one continuous stroke from ([x1], [y1]) to ([x2], [y2]).
+  ///
+  /// Coordinates are physical screen pixels, like [click] and [longPress].
+  /// [durationMs] is the stroke duration; shorter strokes read as a fling, longer
+  /// ones as a deliberate drag by the receiving app.
+  ///
+  /// Returns `true` only when the gesture actually COMPLETED - not merely when it
+  /// was accepted for dispatch. Returns `false` when the service is not connected,
+  /// the gesture was rejected, or it was cancelled (e.g. by a real touch).
+  ///
+  /// Example:
+  /// ```dart
+  /// // Swipe from (100, 800) up to (100, 200) over 250ms
+  /// bool success = await FlutterAccessibilityService.swipe(100, 800, 100, 200);
+  /// ```
+  static Future<bool> swipe(double x1, double y1, double x2, double y2, {int durationMs = 250}) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('swipe', {
+            'x1': x1,
+            'y1': y1,
+            'x2': x2,
+            'y2': y2,
+            'durationMs': durationMs,
+          }) ??
+          false;
+    } on PlatformException catch (error) {
+      log("Error performing swipe: $error");
+      return false;
+    }
+  }
+
+  /// Performs a drag and drop gesture: press and hold at ([x1], [y1]) until the
+  /// target app enters drag mode, then glide to ([x2], [y2]) and release.
+  ///
+  /// Coordinates are physical screen pixels, like [click] and [longPress].
+  /// [holdMs] is the hold duration before the glide starts; when `null` the native
+  /// side uses the system long press timeout plus a small margin, so the user's
+  /// "Touch & hold delay" setting is respected. [glideMs] is the duration of the
+  /// movement from the hold position to the drop position.
+  ///
+  /// Returns `true` only when the gesture actually COMPLETED - not merely when it
+  /// was accepted for dispatch. Returns `false` when the service is not connected,
+  /// either half of the gesture was rejected, or it was cancelled.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Drag the item at (300, 500) onto (300, 1200)
+  /// bool success = await FlutterAccessibilityService.dragAndDrop(300, 500, 300, 1200);
+  /// ```
+  static Future<bool> dragAndDrop(double x1, double y1, double x2, double y2, {int? holdMs, int glideMs = 500}) async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('dragAndDrop', {
+            'x1': x1,
+            'y1': y1,
+            'x2': x2,
+            'y2': y2,
+            'holdMs': holdMs,
+            'glideMs': glideMs,
+          }) ??
+          false;
+    } on PlatformException catch (error) {
+      log("Error performing drag and drop: $error");
+      return false;
+    }
+  }
+
   /// Performs a scroll gesture using swipe movement.
   ///
   /// This simulates a scroll by creating a swipe gesture from the starting point

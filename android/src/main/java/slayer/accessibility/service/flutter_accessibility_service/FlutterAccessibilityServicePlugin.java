@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.ViewConfiguration;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import androidx.annotation.NonNull;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import io.flutter.FlutterInjector;
@@ -405,6 +407,54 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             AccessibilityListener scrollService = AccessibilityListener.getServiceInstance();
             if (scrollService != null && x != null && y != null && deltaX != null && deltaY != null) {
                 result.success(scrollService.scroll(x.floatValue(), y.floatValue(), deltaX.floatValue(), deltaY.floatValue()));
+            } else {
+                result.success(false);
+            }
+        } else if (call.method.equals("getLongPressTimeout")) {
+            // Follows the user's "Touch and hold delay" accessibility setting.
+            result.success(ViewConfiguration.getLongPressTimeout());
+        } else if (call.method.equals("swipe")) {
+            Double x1 = call.argument("x1");
+            Double y1 = call.argument("y1");
+            Double x2 = call.argument("x2");
+            Double y2 = call.argument("y2");
+            Integer durationMs = call.argument("durationMs");
+            AccessibilityListener swipeService = AccessibilityListener.getServiceInstance();
+            if (swipeService != null && x1 != null && y1 != null && x2 != null && y2 != null) {
+                // The completion callback can fire in addition to a synchronous failure path,
+                // and a MethodChannel.Result must never be completed twice.
+                final AtomicBoolean swipeReplied = new AtomicBoolean(false);
+                swipeService.swipe(
+                        x1.floatValue(), y1.floatValue(), x2.floatValue(), y2.floatValue(),
+                        durationMs != null ? durationMs.longValue() : 250L,
+                        completed -> {
+                            if (swipeReplied.compareAndSet(false, true)) {
+                                result.success(completed);
+                            }
+                        });
+            } else {
+                result.success(false);
+            }
+        } else if (call.method.equals("dragAndDrop")) {
+            Double x1 = call.argument("x1");
+            Double y1 = call.argument("y1");
+            Double x2 = call.argument("x2");
+            Double y2 = call.argument("y2");
+            Integer holdMs = call.argument("holdMs");
+            Integer glideMs = call.argument("glideMs");
+            AccessibilityListener dragService = AccessibilityListener.getServiceInstance();
+            if (dragService != null && x1 != null && y1 != null && x2 != null && y2 != null) {
+                final AtomicBoolean dragReplied = new AtomicBoolean(false);
+                dragService.dragAndDrop(
+                        x1.floatValue(), y1.floatValue(), x2.floatValue(), y2.floatValue(),
+                        // 0 lets the native side pick the system long press timeout plus a margin.
+                        holdMs != null ? holdMs.longValue() : 0L,
+                        glideMs != null ? glideMs.longValue() : 500L,
+                        completed -> {
+                            if (dragReplied.compareAndSet(false, true)) {
+                                result.success(completed);
+                            }
+                        });
             } else {
                 result.success(false);
             }
