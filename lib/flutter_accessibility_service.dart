@@ -14,6 +14,7 @@ import 'package:flutter_accessibility_service/accessibility_event.dart';
 import 'package:flutter_accessibility_service/constants.dart';
 import 'package:flutter_accessibility_service/models/display_info.dart';
 import 'package:flutter_accessibility_service/models/interactive_node.dart';
+import 'package:flutter_accessibility_service/models/interactive_nodes_snapshot.dart';
 import 'package:flutter_accessibility_service/config/overlay_options.dart';
 
 export 'config/overlay_options.dart';
@@ -22,6 +23,7 @@ export 'accessibility_event.dart';
 export 'constants.dart';
 export 'models/display_info.dart';
 export 'models/interactive_node.dart';
+export 'models/interactive_nodes_snapshot.dart';
 export 'config/overlay_config.dart';
 export 'snap/snap_resolver.dart';
 export 'snap/snap_controller.dart';
@@ -33,6 +35,8 @@ class FlutterAccessibilityService {
   static const EventChannel _eventChannel = EventChannel('x-slayer/accessibility_event');
   static const EventChannel _messageEventChannel = EventChannel('x-slayer/accessibility_message');
   static const EventChannel _serviceConnectionEventChannel = EventChannel('x-slayer/accessibility_service_connection');
+  static const EventChannel _nodeChangeEventChannel = EventChannel('x-slayer/accessibility_node_changes');
+  static Stream<NodeChangeState>? _nodeChangeStream;
   static const MethodChannel _overlayMessageChannel = MethodChannel('x-slayer/accessibility_message');
   static Stream<AccessibilityEvent>? _stream;
   static Stream<Map<String, dynamic>>? _messageStream;
@@ -615,6 +619,101 @@ class FlutterAccessibilityService {
     } on PlatformException catch (error) {
       log("Error consuming nodes-dirty flag: $error");
       return false;
+    }
+  }
+
+  /// The accessibility service's monotonic tree-change counters (see [NodeChangeState]). Cheap: two volatile reads on
+  /// the platform thread, no tree access. Unlike [consumeNodesDirty] nothing is consumed, so every engine can poll it
+  /// independently. Returns null when the native side does not know the method (older plugin) or the call failed.
+  static Future<NodeChangeState?> getNodeChangeState() async {
+    try {
+      final Map<dynamic, dynamic>? raw = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>('getNodeChangeState');
+      return raw == null ? null : NodeChangeState.fromMap(raw);
+    } on PlatformException catch (error) {
+      log("Error reading node change state: $error");
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  /// Pushes the [NodeChangeState] counters whenever one of them moves (coalesced natively to at most one message per
+  /// ~16ms), so a snap controller can react to a tree change at once instead of on its next poll tick. Broadcast;
+  /// the native side only does work while at least one engine listens - subscribe from the one engine that snaps
+  /// (every message is a platform-thread hop for the listening engine).
+  static Stream<NodeChangeState> get nodeChangeStream {
+    _nodeChangeStream ??= _nodeChangeEventChannel
+        .receiveBroadcastStream()
+        .where((event) => event is Map)
+        .map<NodeChangeState>((event) => NodeChangeState.fromMap(event as Map<dynamic, dynamic>));
+    return _nodeChangeStream!;
+  }
+
+  /// Re-reads ONE node of the last [getInteractiveNodeSnapshot] walk straight from its app, bypassing the accessibility
+  /// cache (`AccessibilityNodeInfo.refresh()`, one binder round trip on a dedicated thread, never behind a running
+  /// walk) and checks that it is still there, visible, enabled and contains ([x], [y]). [id] is the
+  /// [InteractiveNode.id] from that walk. Meant as the last check right before a dwell clicks: a button that faded out
+  /// since the last walk must not be tapped. Returns [NodeRefreshResult.error] when the call failed or the native side
+  /// does not know the method; callers should bound the wait with a timeout.
+  static Future<NodeRefreshResult> refreshInteractiveNode({required String id, required double x, required double y}) async {
+    try {
+      final String? raw = await _methodChannel.invokeMethod<String>('refreshInteractiveNode', <String, dynamic>{'id': id, 'x': x, 'y': y});
+      return NodeRefreshResult.fromName(raw);
+    } on PlatformException catch (error) {
+      log("Error refreshing interactive node: $error");
+      return NodeRefreshResult.error;
+    } on MissingPluginException {
+      return NodeRefreshResult.error;
+    }
+  }
+
+  /// Like [getInteractiveNodes], but in the compact transfer format (see [InteractiveNodesSnapshot]) and with a
+  /// cheaper walk on a background-priority thread: invisible subtrees lying entirely outside their window (off-screen
+  /// web page content) are pruned, each window is capped at [maxVisitedPerWindow] visited and
+  /// [maxActionablePerWindow] actionable nodes, and the whole walk stops after [timeBudgetMs] (a hung app must not
+  /// stall it for the 5s accessibility interaction timeout); a single window stops after [windowBudgetMs] so one slow
+  /// app (a loading web page) cannot starve the others. A cut-short walk reports [InteractiveNodesSnapshot.truncated]
+  /// (and per window in [InteractiveNodesSnapshot.windowInfos]) and is never answered as unchanged - a truncated window's
+  /// list is PARTIAL and must not be taken as proof that its other nodes disappeared.
+  ///
+  /// Inside web content (below an android.webkit.WebView node: Chrome, Samsung Internet, in-app WebViews) the walk
+  /// also reads Chromium's per-node extras: scrolled-off nodes are pruned, a node with an interactive role
+  /// ([isInteractiveWebRole]) or a control className is actionable even when it is not clickable, the depth cap counts
+  /// from the web root, and the nodes carry [InteractiveNode.isWebContent], [InteractiveNode.webRole] and
+  /// [InteractiveNode.clickableScore]. Every node also carries [InteractiveNode.parentTargetId] (nearest ancestor in
+  /// the same list) and [InteractiveNode.windowId].
+  ///
+  /// [prefetchStrategy] is passed to `AccessibilityWindowInfo.getRoot(int)` / `AccessibilityNodeInfo.getChild(int, int)`
+  /// (see [snapshotPrefetchDepthFirst]); [snapshotPrefetchPlatformDefault] keeps the plain `getRoot()` / `getChild(int)`.
+  ///
+  /// Pass the [InteractiveNodesSnapshot.signature] of the last snapshot you applied as [lastSignature]: when the walk
+  /// produces the same content again, the native side answers [InteractiveNodesSnapshot.unchanged] without any node
+  /// payload. The signature covers bounds, flags, window type, viewId, className, parent index, web role and clickable
+  /// score - NOT text and
+  /// contentDescription, which change every second on a playing video (time labels) without moving any target. Returns [InteractiveNodesSnapshot.empty] when the service is not connected or the call failed.
+  static Future<InteractiveNodesSnapshot> getInteractiveNodeSnapshot({
+    int? lastSignature,
+    int maxVisitedPerWindow = 2000,
+    int maxActionablePerWindow = 400,
+    int timeBudgetMs = 1000,
+    int windowBudgetMs = 600,
+    int prefetchStrategy = snapshotPrefetchDepthFirst,
+  }) async {
+    try {
+      final Map<dynamic, dynamic>? raw = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>('getInteractiveNodeSnapshot', <String, dynamic>{
+        'lastSignature': lastSignature,
+        'maxVisitedPerWindow': maxVisitedPerWindow,
+        'maxActionablePerWindow': maxActionablePerWindow,
+        'timeBudgetMs': timeBudgetMs,
+        'windowBudgetMs': windowBudgetMs,
+        'prefetchStrategy': prefetchStrategy,
+      });
+      return raw == null ? InteractiveNodesSnapshot.empty : InteractiveNodesSnapshot.fromMap(raw);
+    } on PlatformException catch (error) {
+      log("Error getting interactive node snapshot: $error");
+      return InteractiveNodesSnapshot.empty;
+    } on MissingPluginException {
+      return InteractiveNodesSnapshot.empty;
     }
   }
 

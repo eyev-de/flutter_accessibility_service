@@ -54,6 +54,7 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     private static final String EVENT_TAG = "x-slayer/accessibility_event";
     private static final String MESSAGE_EVENT_TAG = "x-slayer/accessibility_message";
     private static final String SERVICE_CONNECTION_EVENT_TAG = "x-slayer/accessibility_service_connection";
+    private static final String NODE_CHANGES_EVENT_TAG = "x-slayer/accessibility_node_changes";
     public static final String CACHED_TAG = "cashedAccessibilityEngine";
 
 
@@ -63,6 +64,8 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     private EventChannel messageEventChannel;
     private EventChannel serviceConnectionEventChannel;
     private ServiceConnectionStreamHandler serviceConnectionStreamHandler;
+    private EventChannel nodeChangeEventChannel;
+    private NodeChangeStreamHandler nodeChangeStreamHandler;
     private MessageReceiver messageReceiver;
     private Context context;
     private Activity mActivity;
@@ -79,16 +82,51 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
     // Static and single-threaded: the plugin attaches once per engine (main app plus
     // each overlay), and one shared worker serializes traversals instead of letting
     // concurrent fetches pile up binder calls.
+    // Background priority (APPS-112): the walk competes for CPU with the main thread, which on this Flutter version
+    // is also every engine's Dart UI thread (gaze, pointer, vsync). A late node list is staleness, a late frame is lag.
     private static final ExecutorService nodeQueryExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "a11y-node-query");
+        Thread t = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            r.run();
+        }, "a11y-node-query");
+        t.setDaemon(true);
+        return t;
+    });
+    // refreshInteractiveNode (APPS-112 follow-up) is the last check right before a dwell clicks: one refresh() binder
+    // call that must never wait behind a running walk on nodeQueryExecutor, so it has its own thread at normal priority.
+    private static final ExecutorService nodeRefreshExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "a11y-node-refresh");
         t.setDaemon(true);
         return t;
     });
     private static final android.os.Handler mainThreadHandler = new android.os.Handler(android.os.Looper.getMainLooper());
 
+    /// Completes a node-query result on the main thread and records, for SnapNodeStats, how long the runnable waited
+    /// in the main queue (executor done -> runnable start) and how long result.success (codec encode + send) took.
+    /// Without stats (release build) it only posts the result.
+    private static void postResultMeasured(final Result result, final Object payload) {
+        if (!SnapNodeStats.isEnabled()) {
+            mainThreadHandler.post(() -> result.success(payload));
+            return;
+        }
+        final long postedNanos = System.nanoTime();
+        mainThreadHandler.post(() -> {
+            final long startNanos = System.nanoTime();
+            result.success(payload);
+            SnapNodeStats.recordMain(startNanos - postedNanos, System.nanoTime() - startNanos);
+        });
+    }
+
+    /// A numeric method-call argument as Long (Dart ints arrive as Integer or Long), null when missing or not a number.
+    private static Long argLong(MethodCall call, String key) {
+        Object value = call.argument(key);
+        return value instanceof Number ? ((Number) value).longValue() : null;
+    }
+
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
         context = flutterPluginBinding.getApplicationContext();
+        SnapNodeStats.configure(context);
         channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), CHANNEL_TAG);
         channel.setMethodCallHandler(this);
         eventChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), EVENT_TAG);
@@ -98,6 +136,9 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         serviceConnectionEventChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), SERVICE_CONNECTION_EVENT_TAG);
         serviceConnectionStreamHandler = new ServiceConnectionStreamHandler();
         serviceConnectionEventChannel.setStreamHandler(serviceConnectionStreamHandler);
+        nodeChangeEventChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), NODE_CHANGES_EVENT_TAG);
+        nodeChangeStreamHandler = new NodeChangeStreamHandler();
+        nodeChangeEventChannel.setStreamHandler(nodeChangeStreamHandler);
     }
 
     private final BroadcastReceiver actionsReceiver = new BroadcastReceiver() {
@@ -362,6 +403,7 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
             if (!Utils.isAccessibilitySettingsOn(context)) {
                 result.success(new ArrayList<>());
             } else {
+                SnapNodeStats.noteWalkRequested();
                 // AccessibilityNodeInfo getters are plain binder transactions and safe off
                 // the main thread; only the Result must be completed back on it.
                 nodeQueryExecutor.execute(() -> {
@@ -373,11 +415,78 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                         nodes = new ArrayList<>();
                     }
                     final List<Map<String, Object>> out = nodes;
-                    mainThreadHandler.post(() -> result.success(out));
+                    postResultMeasured(result, out);
                 });
             }
         } else if (call.method.equals("consumeNodesDirty")) {
             result.success(AccessibilityListener.consumeNodesDirty());
+        } else if (call.method.equals("getNodeChangeState")) {
+            HashMap<String, Object> state = new HashMap<>(4);
+            state.put("structural", AccessibilityListener.getStructuralGeneration());
+            state.put("content", AccessibilityListener.getContentGeneration());
+            state.put("connected", AccessibilityListener.getServiceInstance() != null);
+            result.success(state);
+        } else if (call.method.equals("getInteractiveNodeSnapshot")) {
+            final Long lastSignature = argLong(call, "lastSignature");
+            final Long maxVisitedArg = argLong(call, "maxVisitedPerWindow");
+            final Long maxActionableArg = argLong(call, "maxActionablePerWindow");
+            final Long timeBudgetArg = argLong(call, "timeBudgetMs");
+            final int maxVisited = maxVisitedArg != null ? maxVisitedArg.intValue() : 2000;
+            final int maxActionable = maxActionableArg != null ? maxActionableArg.intValue() : 400;
+            final int timeBudgetMs = timeBudgetArg != null ? timeBudgetArg.intValue() : 1000;
+            final Long windowBudgetArg = argLong(call, "windowBudgetMs");
+            final int windowBudgetMs = windowBudgetArg != null ? windowBudgetArg.intValue() : 600;
+            // FLAG_PREFETCH_DESCENDANTS_DEPTH_FIRST | FLAG_PREFETCH_UNINTERRUPTIBLE; -1 = plain getRoot()/getChild(int).
+            final Long prefetchArg = argLong(call, "prefetchStrategy");
+            final int prefetchStrategy = prefetchArg != null ? prefetchArg.intValue()
+                    : AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_DEPTH_FIRST | AccessibilityNodeInfo.FLAG_PREFETCH_UNINTERRUPTIBLE;
+            if (AccessibilityListener.getServiceInstance() == null) {
+                AccessibilityListener.clearSnapshotNodeRefs();
+                result.success(AccessibilityListener.emptyNodeSnapshot(
+                        AccessibilityListener.getStructuralGeneration(), AccessibilityListener.getContentGeneration()));
+            } else {
+                SnapNodeStats.noteWalkRequested();
+                // The whole payload (int[] + string list + metadata) is built on the executor; main only encodes.
+                nodeQueryExecutor.execute(() -> {
+                    HashMap<String, Object> snapshot;
+                    try {
+                        snapshot = AccessibilityListener.getInteractiveNodeSnapshot(
+                                lastSignature, maxVisited, maxActionable, timeBudgetMs, windowBudgetMs, prefetchStrategy);
+                    } catch (Throwable t) {
+                        Log.e("AccessibilityPlugin", "getInteractiveNodeSnapshot failed off-thread: " + t.getMessage());
+                        AccessibilityListener.clearSnapshotNodeRefs();
+                        snapshot = AccessibilityListener.emptyNodeSnapshot(
+                                AccessibilityListener.getStructuralGeneration(), AccessibilityListener.getContentGeneration());
+                        snapshot.put("truncated", true);
+                    }
+                    postResultMeasured(result, snapshot);
+                });
+            }
+        } else if (call.method.equals("refreshInteractiveNode")) {
+            final Object idArg = call.argument("id");
+            final Object xArg = call.argument("x");
+            final Object yArg = call.argument("y");
+            if (!(idArg instanceof String) || !(xArg instanceof Number) || !(yArg instanceof Number)) {
+                SnapNodeStats.recordRefresh("error", 0);
+                result.success("error");
+            } else {
+                final String id = (String) idArg;
+                final int x = ((Number) xArg).intValue();
+                final int y = ((Number) yArg).intValue();
+                nodeRefreshExecutor.execute(() -> {
+                    final long startNanos = SnapNodeStats.isEnabled() ? System.nanoTime() : 0L;
+                    String answer;
+                    try {
+                        answer = AccessibilityListener.refreshInteractiveNode(id, x, y);
+                    } catch (Throwable t) {
+                        Log.e("AccessibilityPlugin", "refreshInteractiveNode failed off-thread: " + t.getMessage());
+                        answer = "error";
+                    }
+                    if (startNanos != 0L) SnapNodeStats.recordRefresh(answer, (int) ((System.nanoTime() - startNanos) / 1_000_000L));
+                    final String out = answer;
+                    mainThreadHandler.post(() -> result.success(out));
+                });
+            }
         } else if (call.method.equals("performLongPressAtPoint")) {
             Double px = call.argument("x");
             Double py = call.argument("y");
@@ -556,6 +665,11 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
         if (serviceConnectionStreamHandler != null) {
             serviceConnectionStreamHandler.onCancel(null);
             serviceConnectionStreamHandler = null;
+        }
+        if (nodeChangeEventChannel != null) nodeChangeEventChannel.setStreamHandler(null);
+        if (nodeChangeStreamHandler != null) {
+            nodeChangeStreamHandler.onCancel(null);
+            nodeChangeStreamHandler = null;
         }
         if (isReceiverRegistered) {
             context.unregisterReceiver(actionsReceiver);
@@ -758,6 +872,33 @@ public class FlutterAccessibilityServicePlugin implements FlutterPlugin, Activit
                     Log.w("AccessibilityPlugin", "Error unregistering service connection receiver: " + e.getMessage());
                 }
                 receiver = null;
+            }
+        }
+    }
+
+    // ============================================================================
+    // Node Change Stream Handler
+    // ============================================================================
+
+    /**
+     * Per-engine sink for the node-change push (APPS-112 follow-up). AccessibilityListener keeps the registered sinks
+     * and sends the coalesced counters to all of them; nothing is scheduled while no engine listens.
+     */
+    private static class NodeChangeStreamHandler implements EventChannel.StreamHandler {
+        private EventChannel.EventSink sink;
+
+        @Override
+        public void onListen(Object arguments, EventChannel.EventSink events) {
+            if (sink != null) AccessibilityListener.removeNodeChangeSink(sink);
+            sink = events;
+            AccessibilityListener.addNodeChangeSink(events);
+        }
+
+        @Override
+        public void onCancel(Object arguments) {
+            if (sink != null) {
+                AccessibilityListener.removeNodeChangeSink(sink);
+                sink = null;
             }
         }
     }

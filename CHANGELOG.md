@@ -1,3 +1,14 @@
+## Unreleased
+
+- Add `getNodeChangeState`: monotonic structural/content tree-change counters (own-package and text-only content changes ignored), pollable by every engine without consuming a shared flag
+- Add `getInteractiveNodeSnapshot`: bounded interactive-node walk (off-window pruning, per-window caps, time budget) in a compact int/string transfer format with a signature-based "unchanged" answer
+- Run node walks on a background-priority thread; in a debuggable host app, log fetch/main-thread stats under the `SnapNodes` tag (release builds collect no stats and log only one rate-limited warning, at most once per 60s, when snapshot walks are repeatedly truncated by the time budgets)
+- Add `nodeChangeStream`: pushes the tree-change counters (coalesced to one message per ~16ms, no work without a listener) so a snap controller reacts to a change at once instead of on its next poll
+- Add `refreshInteractiveNode`: re-reads one node of the last snapshot walk from its app on a dedicated thread and reports whether it is still there, visible, enabled and under the point (pre-click guard)
+- `SnapNodes` summary (debug builds) also logs event delivery delay, content change types, pushes and node refresh results/durations
+- `getInteractiveNodeSnapshot`: per-window time budget (`windowBudgetMs`, default 600ms; total `timeBudgetMs` now 1000ms), batched node prefetch (depth-first + uninterruptible by default; `prefetchStrategy` overrides it) and a per-window breakdown (`windowInts` -> `InteractiveNodesSnapshot.windowInfos`, truncated windows marked); `refreshInteractiveNode` keeps the earlier node refs of a truncated window; `SnapNodes` (debug builds) logs prefetch mode, ms per node, slow node fetches and truncated windows by reason
+- `getInteractiveNodeSnapshot` web content (below an `android.webkit.WebView` node): reads Chromium's `chromeRole` / `clickableScore` / `offscreen` extras, prunes scrolled-off web nodes, treats interactive roles and control classes as actionable, counts the depth cap from the web root (40 levels); compact format now 9 ints per node (adds parentIndex, webRole, clickableScore; flag bit 32 = web content), decoded into the new `InteractiveNode.isWebContent`, `webRole`, `clickableScore`, `parentTargetId` and `windowId`; `SnapNodes` (debug builds) logs a `web:` line per changed snapshot
+
 ## 1.1.0
 
 - Add `swipe` gesture injection (one stroke from A to B)

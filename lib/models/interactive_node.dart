@@ -27,6 +27,24 @@ class InteractiveNode {
   /// Android [AccessibilityWindowInfo] window type, or -1 when unknown.
   final int windowType;
 
+  /// Android snapshot walk only (getInteractiveNodeSnapshot): the node lies inside web content (below a node with
+  /// className android.webkit.WebView - Chrome, Samsung Internet, in-app WebViews).
+  final bool isWebContent;
+
+  /// Chromium's role of a web node as a `webRole*` id (see interactive_nodes_snapshot.dart), 0 when none.
+  final int webRole;
+
+  /// Chromium's `AccessibilityNodeInfo.clickableScore` extra: 300 default action on a control or link, 200 click
+  /// listener on a non-control (card / wrapper), 100 only an ancestor is clickable; 0 when absent.
+  final int clickableScore;
+
+  /// Id of the nearest ancestor that is itself a node of the same snapshot, or null (no ancestor in the list, or a
+  /// source without tree information).
+  final String? parentTargetId;
+
+  /// Android AccessibilityWindowInfo id of the node's window, or -1 when unknown.
+  final int windowId;
+
   const InteractiveNode({
     required this.id,
     required this.bounds,
@@ -40,6 +58,11 @@ class InteractiveNode {
     this.viewId,
     this.className,
     this.windowType = -1,
+    this.isWebContent = false,
+    this.webRole = 0,
+    this.clickableScore = 0,
+    this.parentTargetId,
+    this.windowId = -1,
   });
 
   factory InteractiveNode.fromMap(Map<dynamic, dynamic> map) {
