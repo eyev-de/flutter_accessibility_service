@@ -14,6 +14,7 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.Path;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -32,12 +33,17 @@ import androidx.annotation.RequiresApi;
 import com.google.gson.Gson;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import io.flutter.embedding.android.FlutterTextureView;
@@ -47,6 +53,7 @@ import io.flutter.embedding.engine.FlutterEngineCache;
 import io.flutter.embedding.engine.FlutterEngineGroup;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.FlutterInjector;
+import io.flutter.plugin.common.EventChannel;
 
 
 public class AccessibilityListener extends AccessibilityService {
@@ -82,6 +89,107 @@ public class AccessibilityListener extends AccessibilityService {
         return dirty;
     }
     
+    // Monotonic tree-change counters for the snap-to-item refetch policy (APPS-112). Never reset, so every engine can
+    // track them independently (unlike nodesDirty, which the first consumer clears for everyone).
+    // structural: TYPE_WINDOW_STATE_CHANGED / TYPE_WINDOWS_CHANGED. content: TYPE_WINDOW_CONTENT_CHANGED that is not
+    // text-only. Events of our own package (overlays, main app) bump neither.
+    private static final AtomicLong structuralGeneration = new AtomicLong();
+    private static final AtomicLong contentGeneration = new AtomicLong();
+    private static final int TEXT_ONLY_CONTENT_CHANGE_MASK = AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT
+            | AccessibilityEvent.CONTENT_CHANGE_TYPE_CONTENT_DESCRIPTION
+            | AccessibilityEvent.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION;
+    // Cached in onServiceConnected so onAccessibilityEvent compares without allocating.
+    private static volatile String ownPackageName;
+
+    // Node-change push (APPS-112 follow-up): one EventSink per listening engine. Mutated on the main thread by the
+    // plugin's stream handlers, read by countNodeChangeEvent (main thread) - copy-on-write so the common-case
+    // isEmpty() check and the send loop never need a lock.
+    private static final CopyOnWriteArraySet<EventChannel.EventSink> nodeChangeSinks = new CopyOnWriteArraySet<>();
+    private static final long NODE_CHANGE_PUSH_DELAY_MS = 16;
+    private static final Handler nodeChangeHandler = new Handler(Looper.getMainLooper());
+    // Main thread only.
+    private static boolean nodeChangePushScheduled;
+    private static final Runnable nodeChangePushRunnable = AccessibilityListener::sendNodeChangePush;
+
+    // Actionable nodes of the snapshot walks per windowId (snapshot window order), by the same id the Dart decoder
+    // builds: a complete window holds the refs of its last walk, a truncated one also keeps its earlier refs (the Dart
+    // side carries those nodes). Built on the node-query executor, published whole via this volatile field and never
+    // mutated afterwards, so the refresh executor can read it without a lock. The legacy getInteractiveNodes walk does
+    // not touch it.
+    private static volatile Map<Integer, Map<String, AccessibilityNodeInfo>> snapshotNodeRefs = Collections.emptyMap();
+
+    public static long getStructuralGeneration() {
+        return structuralGeneration.get();
+    }
+
+    public static long getContentGeneration() {
+        return contentGeneration.get();
+    }
+
+    /// Registers an engine's node-change sink. Main thread.
+    public static void addNodeChangeSink(EventChannel.EventSink sink) {
+        if (sink != null) nodeChangeSinks.add(sink);
+    }
+
+    /// Unregisters an engine's node-change sink. Main thread.
+    public static void removeNodeChangeSink(EventChannel.EventSink sink) {
+        if (sink != null) nodeChangeSinks.remove(sink);
+    }
+
+    /// Schedules one coalesced push of the current counters ~16ms from now, unless one is already pending or nobody
+    /// listens. Main thread; allocation-free.
+    private static void scheduleNodeChangePush() {
+        if (nodeChangePushScheduled || nodeChangeSinks.isEmpty()) return;
+        nodeChangePushScheduled = true;
+        nodeChangeHandler.postDelayed(nodeChangePushRunnable, NODE_CHANGE_PUSH_DELAY_MS);
+    }
+
+    private static void sendNodeChangePush() {
+        nodeChangePushScheduled = false;
+        if (nodeChangeSinks.isEmpty()) return;
+        HashMap<String, Object> state = new HashMap<>(4);
+        state.put("structural", structuralGeneration.get());
+        state.put("content", contentGeneration.get());
+        state.put("connected", serviceInstance != null);
+        for (EventChannel.EventSink sink : nodeChangeSinks) {
+            try {
+                sink.success(state);
+            } catch (Exception e) {
+                Log.w("AccessibilityListener", "node change push failed: " + e.getMessage());
+            }
+        }
+        SnapNodeStats.notePushSent();
+    }
+
+    /// Drops the node references of the last snapshot walk (service not connected, failed walk).
+    public static void clearSnapshotNodeRefs() {
+        snapshotNodeRefs = Collections.emptyMap();
+    }
+
+    /// Re-reads one node of the snapshot walks (looked up over all windows) from its app (refresh() bypasses the
+    /// accessibility cache) and checks it is still attached, visible, enabled and contains (x, y). Returns "ok", "missing", "gone", "hidden",
+    /// "moved" or "error". Runs on the plugin's node-refresh executor, never on the main thread.
+    public static String refreshInteractiveNode(String id, int x, int y) {
+        if (serviceInstance == null || id == null) return "error";
+        try {
+            AccessibilityNodeInfo node = null;
+            for (Map<String, AccessibilityNodeInfo> windowRefs : snapshotNodeRefs.values()) {
+                node = windowRefs.get(id);
+                if (node != null) break;
+            }
+            if (node == null) return "missing";
+            if (!node.refresh()) return "gone";
+            if (!node.isVisibleToUser() || !node.isEnabled()) return "hidden";
+            final Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            if (!bounds.contains(x, y)) return "moved";
+            return "ok";
+        } catch (Exception e) {
+            Log.w("AccessibilityListener", "refreshInteractiveNode failed: " + e.getMessage());
+            return "error";
+        }
+    }
+
     public static AccessibilityNodeInfo getNodeInfo(String id) {
         return nodeMap.get(id);
     }
@@ -196,6 +304,11 @@ public class AccessibilityListener extends AccessibilityService {
             Log.e("AccessibilityListener", "Service not connected - cannot enumerate nodes");
             return out;
         }
+        // Stats only (SnapNodeStats, debug builds); the walk itself is unchanged.
+        final boolean stats = SnapNodeStats.isEnabled();
+        final long startNanos = stats ? System.nanoTime() : 0L;
+        final int[] visited = new int[1];
+        int walkedWindows = 0;
         try {
             List<AccessibilityWindowInfo> windows = serviceInstance.getWindows();
             if (windows != null && !windows.isEmpty()) {
@@ -205,23 +318,32 @@ public class AccessibilityListener extends AccessibilityService {
                     if (w.getType() == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue;
                     AccessibilityNodeInfo root = w.getRoot();
                     if (root != null) {
-                        collectInteractive(root, out, 0, w.getType());
+                        walkedWindows++;
+                        collectInteractive(root, out, 0, w.getType(), visited);
                     }
                 }
             } else {
                 AccessibilityNodeInfo root = serviceInstance.getRootInActiveWindow();
-                if (root != null) collectInteractive(root, out, 0, -1);
+                if (root != null) {
+                    walkedWindows++;
+                    collectInteractive(root, out, 0, -1, visited);
+                }
             }
         } catch (Exception e) {
             Log.e("AccessibilityListener", "getInteractiveNodes failed: " + e.getMessage());
+        }
+        if (stats) {
+            int walkMs = (int) ((System.nanoTime() - startNanos) / 1_000_000L);
+            SnapNodeStats.recordWalk(true, walkMs, walkedWindows, visited[0], out.size(), 0, 0, false, false);
         }
         return out;
     }
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private static void collectInteractive(AccessibilityNodeInfo node,
-            List<Map<String, Object>> out, int depth, int windowType) {
+            List<Map<String, Object>> out, int depth, int windowType, int[] visited) {
         if (node == null || depth > maxDepth) return;
+        visited[0]++;
         if (node.isVisibleToUser() && node.isEnabled()) {
             boolean actionable = node.isClickable() || node.isLongClickable()
                     || node.isScrollable() || node.isEditable();
@@ -252,8 +374,602 @@ public class AccessibilityListener extends AccessibilityService {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null) collectInteractive(child, out, depth + 1, windowType);
+            if (child != null) collectInteractive(child, out, depth + 1, windowType, visited);
         }
+    }
+
+    /// Compact, bounded variant of getInteractiveNodes for the snap-to-item refetch policy (APPS-112). Same
+    /// actionable rule and window set, but:
+    /// - invisible subtrees whose bounds lie entirely outside their window are pruned (off-screen web content),
+    /// - each window stops after maxVisitedPerWindow visited / maxActionablePerWindow actionable nodes or after
+    ///   windowBudgetMs (that window is truncated, the walk continues with the next one), the whole walk after
+    ///   timeBudgetMs (the current and all remaining windows are truncated),
+    /// - nodes are fetched with prefetchStrategy (AccessibilityNodeInfo FLAG_PREFETCH_* for getRoot(int) /
+    ///   getChild(int, int)); -1 keeps the plain getRoot() / getChild(int),
+    /// - web content (below a node with className android.webkit.WebView): Chromium's chromeRole / clickableScore /
+    ///   offscreen extras are read once per node, scrolled-off nodes (offscreen extra + empty bounds) are pruned with
+    ///   their subtree, an interactive role or a control className makes a node actionable even when it is not
+    ///   clickable, and the depth cap counts MAX_WEB_DEPTH levels from the web root (maxDepth elsewhere),
+    /// - the result is a flat int[] (9 per node: l, t, r, b, flags (bit 32 = web content), windowType, parentIndex
+    ///   (nearest appended ancestor, -1 none), webRole, clickableScore) plus a flat string list (4 per node:
+    ///   viewId, className, text, contentDescription; the last two truncated to 64 chars), built here on the caller's
+    ///   (background) thread so the platform-thread encode stays cheap,
+    /// - "windowInts" lists every considered window (9 ints: windowId, windowType, nodeStart, nodeCount, truncated,
+    ///   l, t, r, b), also the ones without a root or never reached (truncated, nodeCount 0),
+    /// - a 64-bit signature over geometry + identity (not text) and the window breakdown lets an identical walk
+    ///   answer "unchanged" without any node payload; a walk cut short by a cap, a budget or an exception never does.
+    /// The change generations are read BEFORE the walk, so an event during the walk shows up as a later change.
+    /// Runs on the node-query executor; never on the main thread.
+    public static HashMap<String, Object> getInteractiveNodeSnapshot(Long lastSignature, int maxVisitedPerWindow,
+            int maxActionablePerWindow, int timeBudgetMs, int windowBudgetMs, int prefetchStrategy) {
+        final long structuralGen = structuralGeneration.get();
+        final long contentGen = contentGeneration.get();
+        final AccessibilityListener service = serviceInstance;
+        if (service == null) {
+            clearSnapshotNodeRefs();
+            return emptyNodeSnapshot(structuralGen, contentGen);
+        }
+        SnapshotWalk walk = new SnapshotWalk(maxVisitedPerWindow, maxActionablePerWindow, timeBudgetMs, windowBudgetMs,
+                sanitizePrefetchStrategy(prefetchStrategy));
+        try {
+            List<AccessibilityWindowInfo> windows = service.getWindows();
+            if (windows != null && !windows.isEmpty()) {
+                for (AccessibilityWindowInfo w : windows) {
+                    if (w == null) continue;
+                    // Skip our own highlight/overlay windows so they never become snap targets.
+                    if (w.getType() == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue;
+                    walk.walkWindow(w);
+                }
+            } else {
+                AccessibilityNodeInfo root = service.getRootInActiveWindow();
+                if (root != null) walk.walkActiveRoot(root);
+            }
+        } catch (Exception e) {
+            walk.truncated = true;
+            Log.e("AccessibilityListener", "getInteractiveNodeSnapshot failed: " + e.getMessage());
+        }
+        return walk.finish(lastSignature, structuralGen, contentGen);
+    }
+
+    private static volatile boolean invalidPrefetchLogged;
+    // AccessibilityNodeInfo.FLAG_PREFETCH_MASK / FLAG_PREFETCH_DESCENDANTS_MASK are @hide.
+    private static final int PREFETCH_MASK = 0x3f;
+    private static final int PREFETCH_DESCENDANTS_MASK = AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID
+            | AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_DEPTH_FIRST
+            | AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_BREADTH_FIRST;
+
+    /// A strategy the platform would reject (bits outside FLAG_PREFETCH_MASK, more than one descendant strategy -
+    /// AccessibilityInteractionClient throws IllegalArgumentException) falls back to the plain calls (-1).
+    static int sanitizePrefetchStrategy(int strategy) {
+        if (strategy < 0) return -1;
+        final int descendants = strategy & PREFETCH_DESCENDANTS_MASK;
+        if ((strategy & ~PREFETCH_MASK) != 0 || (descendants & (descendants - 1)) != 0) {
+            if (!invalidPrefetchLogged) {
+                invalidPrefetchLogged = true;
+                Log.w("AccessibilityListener", "invalid prefetchStrategy " + strategy + ", using the platform default");
+            }
+            return -1;
+        }
+        return strategy;
+    }
+
+    /// Result shape of getInteractiveNodeSnapshot when the service is not connected: changed, signature 0, no nodes.
+    public static HashMap<String, Object> emptyNodeSnapshot(long structuralGen, long contentGen) {
+        HashMap<String, Object> m = new HashMap<>(20);
+        m.put("unchanged", false);
+        m.put("signature", 0L);
+        m.put("ints", new int[0]);
+        m.put("strings", new ArrayList<String>(0));
+        m.put("windowInts", new int[0]);
+        m.put("structuralGeneration", structuralGen);
+        m.put("contentGeneration", contentGen);
+        m.put("walkMs", 0);
+        m.put("windows", 0);
+        m.put("visited", 0);
+        m.put("actionable", 0);
+        m.put("pruned", 0);
+        m.put("depthCapped", 0);
+        m.put("truncated", false);
+        return m;
+    }
+
+    /// One getInteractiveNodeSnapshot walk. Not thread-safe; one instance per call.
+    /// Node recycling: the plugin's minSdk is 35 and AccessibilityNodeInfo.recycle() is a no-op since API 33, so
+    /// nodes are simply dropped.
+    private static final class SnapshotWalk {
+        // left, top, right, bottom, flags, windowType, parentIndex, webRole, clickableScore.
+        private static final int INT_STRIDE = 9;
+        private static final int STRING_STRIDE = 4;
+        private static final int FLAG_WEB_CONTENT = 32;
+        // Depth cap below a web root (Chrome's own UI above the root already uses ~8-12 of the 20 general levels).
+        private static final int MAX_WEB_DEPTH = 40;
+        private static final String WEB_ROOT_CLASS = "android.webkit.WebView";
+        private static final String EXTRA_CHROME_ROLE = "AccessibilityNodeInfo.chromeRole";
+        private static final String EXTRA_CLICKABLE_SCORE = "AccessibilityNodeInfo.clickableScore";
+        private static final String EXTRA_OFFSCREEN = "AccessibilityNodeInfo.offscreen";
+        // Mirror of the Dart webRole* ids (interactive_nodes_snapshot.dart); 99 = any other role string.
+        static final int WEB_ROLE_OTHER = 99;
+        static final int WEB_ROLE_MAX_INTERACTIVE = 14;
+        private static final HashMap<String, Integer> WEB_ROLES = new HashMap<>(64);
+        private static final HashSet<String> WEB_TARGET_CLASSES = new HashSet<>(Arrays.asList(
+                "android.widget.Button", "android.widget.CheckBox", "android.widget.RadioButton", "android.widget.Switch",
+                "android.widget.ToggleButton", "android.widget.EditText", "android.widget.Spinner", "android.widget.SeekBar",
+                "android.widget.ImageButton"));
+
+        static {
+            WEB_ROLES.put("link", 1);
+            WEB_ROLES.put("button", 2);
+            WEB_ROLES.put("popUpButton", 2);
+            WEB_ROLES.put("checkBox", 3);
+            WEB_ROLES.put("menuItemCheckBox", 3);
+            WEB_ROLES.put("radioButton", 4);
+            WEB_ROLES.put("menuItemRadio", 4);
+            WEB_ROLES.put("switch", 5);
+            WEB_ROLES.put("toggleButton", 6);
+            WEB_ROLES.put("menuItem", 7);
+            WEB_ROLES.put("tab", 8);
+            WEB_ROLES.put("listBoxOption", 9);
+            WEB_ROLES.put("menuListOption", 9);
+            WEB_ROLES.put("comboBoxSelect", 10);
+            WEB_ROLES.put("comboBoxMenuButton", 10);
+            WEB_ROLES.put("textField", 11);
+            WEB_ROLES.put("searchBox", 11);
+            WEB_ROLES.put("spinButton", 11);
+            WEB_ROLES.put("textFieldWithComboBox", 11);
+            WEB_ROLES.put("slider", 12);
+            WEB_ROLES.put("treeItem", 13);
+            WEB_ROLES.put("disclosureTriangle", 14);
+            WEB_ROLES.put("heading", 15);
+            WEB_ROLES.put("image", 16);
+        }
+
+        /// Role id of a chromeRole extra: 0 none/empty, 99 any role string outside the table.
+        static int webRoleId(CharSequence role) {
+            if (role == null || role.length() == 0) return 0;
+            final Integer id = WEB_ROLES.get(role.toString());
+            return id != null ? id : WEB_ROLE_OTHER;
+        }
+
+        private static final int WINDOW_INT_STRIDE = 9;
+        private static final int MAX_TEXT_LENGTH = 64;
+        private static final long SLOW_FETCH_NANOS = 1_000_000L;
+        private static final long FNV_OFFSET = 0xcbf29ce484222325L;
+        private static final long FNV_PRIME = 0x100000001b3L;
+
+        private final int maxVisitedPerWindow;
+        private final int maxActionablePerWindow;
+        private final long startNanos;
+        private final long budgetNanos;
+        private final long windowBudgetNanos;
+        private final int prefetchStrategy;
+        // Per-fetch timing (slowFetches) is stats only: debug builds.
+        private final boolean measure = SnapNodeStats.isEnabled();
+        private final Rect bounds = new Rect();
+
+        private int[] ints = new int[INT_STRIDE * 64];
+        private int intCount;
+        private final ArrayList<String> strings = new ArrayList<>(STRING_STRIDE * 64);
+        private long hash = FNV_OFFSET;
+        private final ArrayList<SnapshotWindowEntry> entries = new ArrayList<>(8);
+
+        int windows;
+        int visited;
+        int actionable;
+        int pruned;
+        int depthCapped;
+        int slowFetches;
+        // Web content (debug `web:` line only, besides offscreenPruned which also counts into pruned).
+        int webVisited;
+        int webTargets;
+        int webByClickable;
+        int webByRole;
+        int webByClass;
+        int webOffscreenPruned;
+        int webDepthCapped;
+        final int[] webRoleCounts = new int[SnapNodeStats.WEB_ROLE_NAMES.length];
+        // Extras of the node being visited (set by readWebExtras).
+        private int extraRole;
+        private int extraScore;
+        private boolean extraOffscreen;
+        boolean truncated;
+        boolean stopAll;
+        final int[] truncatedByReason = new int[SnapNodeStats.TRUNCATION_REASONS.length];
+
+        // Per window.
+        private SnapshotWindowEntry current;
+        private Rect windowBounds;
+        private int windowType;
+        private long windowStartNanos;
+        private int windowVisited;
+        private int windowActionable;
+        private boolean stopWindow;
+
+        SnapshotWalk(int maxVisitedPerWindow, int maxActionablePerWindow, int timeBudgetMs, int windowBudgetMs,
+                int prefetchStrategy) {
+            this.maxVisitedPerWindow = maxVisitedPerWindow;
+            this.maxActionablePerWindow = maxActionablePerWindow;
+            this.budgetNanos = timeBudgetMs * 1_000_000L;
+            this.windowBudgetNanos = windowBudgetMs * 1_000_000L;
+            this.prefetchStrategy = prefetchStrategy;
+            this.startNanos = System.nanoTime();
+        }
+
+        /// One window of getWindows(): always produces exactly one entry.
+        void walkWindow(AccessibilityWindowInfo w) {
+            final Rect wb = new Rect();
+            w.getBoundsInScreen(wb);
+            final SnapshotWindowEntry entry = new SnapshotWindowEntry(w.getId(), w.getType(), wb, actionable);
+            entries.add(entry);
+            if (!stopAll && System.nanoTime() - startNanos > budgetNanos) stopAll = true;
+            if (stopAll) {
+                entry.reason = SnapNodeStats.TRUNCATED_TOTAL_BUDGET;
+                return;
+            }
+            AccessibilityNodeInfo root;
+            try {
+                final long t0 = measure ? System.nanoTime() : 0L;
+                root = prefetchStrategy >= 0 ? w.getRoot(prefetchStrategy) : w.getRoot();
+                if (measure && System.nanoTime() - t0 >= SLOW_FETCH_NANOS) slowFetches++;
+            } catch (RuntimeException e) {
+                Log.w("AccessibilityListener", "snapshot getRoot failed: " + e.getMessage());
+                entry.reason = SnapNodeStats.TRUNCATED_ERROR;
+                truncated = true;
+                return;
+            }
+            if (root == null) {
+                // Not a cut-short walk (the old walk skipped such windows silently), but the window's list is not
+                // authoritative either: truncated in windowInts, without the walk-level truncated flag.
+                entry.reason = SnapNodeStats.TRUNCATED_NO_ROOT;
+                return;
+            }
+            walkEntry(entry, root, wb.isEmpty() ? null : wb, w.getType());
+        }
+
+        /// The getRootInActiveWindow fallback: one entry, type -1, bounds of the root, no off-window pruning.
+        void walkActiveRoot(AccessibilityNodeInfo root) {
+            final Rect rb = new Rect();
+            root.getBoundsInScreen(rb);
+            final SnapshotWindowEntry entry = new SnapshotWindowEntry(root.getWindowId(), -1, rb, actionable);
+            entries.add(entry);
+            walkEntry(entry, root, null, -1);
+        }
+
+        private void walkEntry(SnapshotWindowEntry entry, AccessibilityNodeInfo root, Rect windowBounds, int windowType) {
+            current = entry;
+            this.windowBounds = windowBounds;
+            this.windowType = windowType;
+            windowStartNanos = System.nanoTime();
+            windowVisited = 0;
+            windowActionable = 0;
+            stopWindow = false;
+            windows++;
+            try {
+                visit(root, 0, -1, -1);
+            } catch (RuntimeException e) {
+                Log.w("AccessibilityListener", "snapshot window walk failed: " + e.getMessage());
+                if (entry.reason == SnapNodeStats.TRUNCATED_NONE) entry.reason = SnapNodeStats.TRUNCATED_ERROR;
+                truncated = true;
+            } finally {
+                entry.nodeCount = actionable - entry.nodeStart;
+                current = null;
+            }
+        }
+
+        private void stopCurrentWindow(int reason) {
+            stopWindow = true;
+            truncated = true;
+            if (current.reason == SnapNodeStats.TRUNCATED_NONE) current.reason = reason;
+        }
+
+        /// webRootDepth: depth of the nearest android.webkit.WebView ancestor, -1 outside web content. parentIndex: node
+        /// index of the nearest ancestor that was appended, -1 when none.
+        private void visit(AccessibilityNodeInfo node, int depth, int webRootDepth, int parentIndex) {
+            if (stopWindow || stopAll) return;
+            visited++;
+            windowVisited++;
+            if (windowVisited > maxVisitedPerWindow) {
+                stopCurrentWindow(SnapNodeStats.TRUNCATED_CAP);
+                return;
+            }
+            // Every node: one nanoTime (~25ns) is noise next to a node fetch, and a slow app (several ms per cache
+            // miss) would otherwise overshoot the budgets by dozens of fetches.
+            final long now = System.nanoTime();
+            if (now - startNanos > budgetNanos) {
+                stopAll = true;
+                stopCurrentWindow(SnapNodeStats.TRUNCATED_TOTAL_BUDGET);
+                return;
+            }
+            if (now - windowStartNanos > windowBudgetNanos) {
+                stopCurrentWindow(SnapNodeStats.TRUNCATED_WINDOW_BUDGET);
+                return;
+            }
+            node.getBoundsInScreen(bounds);
+            final boolean visible = node.isVisibleToUser();
+            if (!visible && windowBounds != null && !bounds.isEmpty() && !Rect.intersects(bounds, windowBounds)) {
+                pruned++;
+                return;
+            }
+            final boolean inWeb = webRootDepth >= 0;
+            if (inWeb) {
+                webVisited++;
+                readWebExtras(node);
+                // Scrolled-off web nodes stay isVisibleToUser() with bounds clipped to nothing: the prune above never
+                // fires for them and a long page would eat the visited cap.
+                if (extraOffscreen && bounds.isEmpty()) {
+                    pruned++;
+                    webOffscreenPruned++;
+                    return;
+                }
+            }
+            final CharSequence classNameSeq = node.getClassName();
+            final String className = classNameSeq != null ? classNameSeq.toString() : null;
+            int childParentIndex = parentIndex;
+            if (visible && node.isEnabled() && bounds.width() > 0 && bounds.height() > 0) {
+                final boolean clickable = node.isClickable();
+                final boolean longClickable = node.isLongClickable();
+                final boolean scrollable = node.isScrollable();
+                final boolean editable = node.isEditable();
+                final boolean byFlags = clickable || longClickable || scrollable || editable;
+                boolean byRole = false;
+                boolean byClass = false;
+                if (!byFlags && inWeb) {
+                    byRole = extraRole >= 1 && extraRole <= WEB_ROLE_MAX_INTERACTIVE;
+                    byClass = !byRole && className != null && WEB_TARGET_CLASSES.contains(className);
+                }
+                if (byFlags || byRole || byClass) {
+                    int flags = (clickable ? 1 : 0) | (longClickable ? 2 : 0) | (scrollable ? 4 : 0)
+                            | (editable ? 8 : 0) | (node.isFocusable() ? 16 : 0) | (inWeb ? FLAG_WEB_CONTENT : 0);
+                    childParentIndex = actionable;
+                    append(node, className, flags, parentIndex, inWeb ? extraRole : 0, inWeb ? extraScore : 0);
+                    if (inWeb) {
+                        webTargets++;
+                        if (byFlags) {
+                            webByClickable++;
+                        } else if (byRole) {
+                            webByRole++;
+                        } else {
+                            webByClass++;
+                        }
+                        final int roleSlot = SnapNodeStats.webRoleSlot(extraRole);
+                        if (roleSlot >= 0) webRoleCounts[roleSlot]++;
+                    }
+                    if (windowActionable >= maxActionablePerWindow) {
+                        stopCurrentWindow(SnapNodeStats.TRUNCATED_CAP);
+                        return;
+                    }
+                }
+            }
+            final int childCount = node.getChildCount();
+            // The WebView itself is the web root: its descendants are web content, counted from here.
+            final int childWebRootDepth = inWeb ? webRootDepth : (WEB_ROOT_CLASS.equals(className) ? depth : -1);
+            final boolean capped = childWebRootDepth >= 0 ? depth - childWebRootDepth >= MAX_WEB_DEPTH : depth >= maxDepth;
+            if (capped) {
+                if (childCount > 0) {
+                    depthCapped++;
+                    if (inWeb) webDepthCapped++;
+                }
+                return;
+            }
+            for (int i = 0; i < childCount; i++) {
+                if (stopWindow || stopAll) return;
+                final long t0 = measure ? System.nanoTime() : 0L;
+                AccessibilityNodeInfo child = prefetchStrategy >= 0 ? node.getChild(i, prefetchStrategy) : node.getChild(i);
+                if (measure && System.nanoTime() - t0 >= SLOW_FETCH_NANOS) slowFetches++;
+                if (child != null) visit(child, depth + 1, childWebRootDepth, childParentIndex);
+            }
+        }
+
+        /// Chromium's per-node extras (parceled with the node, no IPC). Defaults on a missing bundle or any failure.
+        private void readWebExtras(AccessibilityNodeInfo node) {
+            extraRole = 0;
+            extraScore = 0;
+            extraOffscreen = false;
+            try {
+                final Bundle extras = node.getExtras();
+                if (extras == null || extras.isEmpty()) return;
+                extraRole = webRoleId(extras.getCharSequence(EXTRA_CHROME_ROLE));
+                extraScore = extras.getInt(EXTRA_CLICKABLE_SCORE, 0);
+                extraOffscreen = extras.getBoolean(EXTRA_OFFSCREEN, false);
+            } catch (RuntimeException e) {
+                extraRole = 0;
+                extraScore = 0;
+                extraOffscreen = false;
+            }
+        }
+
+        private void append(AccessibilityNodeInfo node, String className, int flags, int parentIndex, int webRole,
+                int clickableScore) {
+            if (intCount + INT_STRIDE > ints.length) ints = Arrays.copyOf(ints, ints.length * 2);
+            ints[intCount] = bounds.left;
+            ints[intCount + 1] = bounds.top;
+            ints[intCount + 2] = bounds.right;
+            ints[intCount + 3] = bounds.bottom;
+            ints[intCount + 4] = flags;
+            ints[intCount + 5] = windowType;
+            ints[intCount + 6] = parentIndex;
+            ints[intCount + 7] = webRole;
+            ints[intCount + 8] = clickableScore;
+            intCount += INT_STRIDE;
+            String viewId = node.getViewIdResourceName();
+            strings.add(viewId);
+            strings.add(className);
+            strings.add(truncateText(node.getText()));
+            strings.add(truncateText(node.getContentDescription()));
+            // Same id as decodeCompactInteractiveNodes on the Dart side; the first node wins on a duplicate id.
+            final String idBase = viewId != null ? viewId : (className != null ? className : "node");
+            current.refs.putIfAbsent(idBase + "@" + bounds.left + "," + bounds.top + "," + bounds.right + "," + bounds.bottom, node);
+            mix(bounds.left);
+            mix(bounds.top);
+            mix(bounds.right);
+            mix(bounds.bottom);
+            mix(flags);
+            mix(windowType);
+            mix(viewId != null ? viewId.hashCode() : 0);
+            mix(className != null ? className.hashCode() : 0);
+            mix(parentIndex);
+            mix(webRole);
+            mix(clickableScore);
+            actionable++;
+            windowActionable++;
+        }
+
+        private void mix(int v) {
+            hash = (hash ^ (v & 0xffffffffL)) * FNV_PRIME;
+        }
+
+        private static String truncateText(CharSequence cs) {
+            if (cs == null) return null;
+            if (cs.length() <= MAX_TEXT_LENGTH) return cs.toString();
+            int end = MAX_TEXT_LENGTH;
+            // Never split a surrogate pair.
+            if (Character.isHighSurrogate(cs.charAt(end - 1))) end--;
+            return cs.subSequence(0, end).toString();
+        }
+
+        HashMap<String, Object> finish(Long lastSignature, long structuralGen, long contentGen) {
+            final long walkNanos = System.nanoTime() - startNanos;
+            final int walkMs = (int) (walkNanos / 1_000_000L);
+            final int[] windowInts = new int[entries.size() * WINDOW_INT_STRIDE];
+            int windowsTruncated = 0;
+            for (int i = 0; i < entries.size(); i++) {
+                final SnapshotWindowEntry e = entries.get(i);
+                final boolean windowTruncated = e.reason != SnapNodeStats.TRUNCATED_NONE;
+                if (windowTruncated) {
+                    windowsTruncated++;
+                    truncatedByReason[e.reason]++;
+                }
+                final int o = i * WINDOW_INT_STRIDE;
+                windowInts[o] = e.windowId;
+                windowInts[o + 1] = e.windowType;
+                windowInts[o + 2] = e.nodeStart;
+                windowInts[o + 3] = e.nodeCount;
+                windowInts[o + 4] = windowTruncated ? 1 : 0;
+                windowInts[o + 5] = e.bounds.left;
+                windowInts[o + 6] = e.bounds.top;
+                windowInts[o + 7] = e.bounds.right;
+                windowInts[o + 8] = e.bounds.bottom;
+                // The window breakdown is part of the content: a window that opens/closes without nodes, a root
+                // that goes missing or comes back must not be answered as unchanged.
+                mix(e.windowId);
+                mix(e.windowType);
+                mix(e.nodeCount);
+                mix(windowTruncated ? 1 : 0);
+                mix(e.bounds.left);
+                mix(e.bounds.top);
+                mix(e.bounds.right);
+                mix(e.bounds.bottom);
+            }
+            mix(actionable);
+            final long signature = hash;
+            final boolean unchanged = !truncated && lastSignature != null && signature == lastSignature;
+            HashMap<String, Object> m = new HashMap<>(20);
+            m.put("unchanged", unchanged);
+            m.put("signature", signature);
+            if (!unchanged) {
+                m.put("ints", intCount == ints.length ? ints : Arrays.copyOf(ints, intCount));
+                m.put("strings", strings);
+                m.put("windowInts", windowInts);
+            }
+            m.put("structuralGeneration", structuralGen);
+            m.put("contentGeneration", contentGen);
+            m.put("walkMs", walkMs);
+            m.put("windows", windows);
+            m.put("visited", visited);
+            m.put("actionable", actionable);
+            m.put("pruned", pruned);
+            m.put("depthCapped", depthCapped);
+            m.put("truncated", truncated);
+            publishNodeRefs();
+            SnapNodeStats.noteSnapshotBudget(walkMs, windows, truncatedByReason);
+            if (measure) {
+                SnapNodeStats.recordSnapshotWalk(walkNanos, windows, visited, actionable, pruned, depthCapped, unchanged,
+                        truncated, prefetchStrategy, slowFetches, windowsTruncated, truncatedByReason);
+                if (!unchanged && webVisited > 0) {
+                    SnapNodeStats.logWebWalk(webVisited, webTargets, webByClickable, webByRole, webByClass,
+                            webOffscreenPruned, webDepthCapped, webRoleCounts);
+                }
+            }
+            return m;
+        }
+
+        /// Per-window node refs for refreshInteractiveNode: a complete window's new refs replace its old ones, a
+        /// truncated window keeps its old refs plus the new ones (new wins on the same id) because the Dart side
+        /// carries that window's last complete nodes; windows no longer listed are dropped. Published as a new map,
+        /// never mutated afterwards.
+        private void publishNodeRefs() {
+            final Map<Integer, Map<String, AccessibilityNodeInfo>> previous = snapshotNodeRefs;
+            final LinkedHashMap<Integer, Map<String, AccessibilityNodeInfo>> next = new LinkedHashMap<>(entries.size() * 2);
+            for (SnapshotWindowEntry e : entries) {
+                Map<String, AccessibilityNodeInfo> refs = e.refs;
+                if (e.reason != SnapNodeStats.TRUNCATED_NONE) {
+                    final Map<String, AccessibilityNodeInfo> old = previous.get(e.windowId);
+                    if (old != null && !old.isEmpty()) {
+                        final HashMap<String, AccessibilityNodeInfo> merged = new HashMap<>(old);
+                        merged.putAll(e.refs);
+                        refs = merged;
+                    }
+                }
+                final Map<String, AccessibilityNodeInfo> existing = next.get(e.windowId);
+                if (existing != null) {
+                    // Same window id listed twice (should not happen): keep both, first wins.
+                    final HashMap<String, AccessibilityNodeInfo> combined = new HashMap<>(refs);
+                    combined.putAll(existing);
+                    refs = combined;
+                }
+                if (!refs.isEmpty()) next.put(e.windowId, refs);
+            }
+            snapshotNodeRefs = next;
+        }
+    }
+
+    /// One considered window of a snapshot walk.
+    private static final class SnapshotWindowEntry {
+        final int windowId;
+        final int windowType;
+        final Rect bounds;
+        final int nodeStart;
+        int nodeCount;
+        int reason = SnapNodeStats.TRUNCATED_NONE;
+        final HashMap<String, AccessibilityNodeInfo> refs = new HashMap<>();
+
+        SnapshotWindowEntry(int windowId, int windowType, Rect bounds, int nodeStart) {
+            this.windowId = windowId;
+            this.windowType = windowType;
+            this.bounds = bounds;
+            this.nodeStart = nodeStart;
+        }
+    }
+
+    /// Bumps the change generations for one window event (APPS-112). Runs on the main thread, which on this Flutter
+    /// version is also every engine's Dart UI thread: no allocation, no node access - a CharSequence compare against
+    /// the cached own package and one int read.
+    private static void countNodeChangeEvent(AccessibilityEvent event, int type) {
+        final boolean stats = SnapNodeStats.isEnabled();
+        if (stats) SnapNodeStats.noteEventDelay(SystemClock.uptimeMillis() - event.getEventTime());
+        final String own = ownPackageName;
+        final CharSequence pkg = event.getPackageName();
+        if (own != null && pkg != null && own.contentEquals(pkg)) {
+            if (stats) SnapNodeStats.eventsOwn++;
+            return;
+        }
+        if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            final int changeTypes = event.getContentChangeTypes();
+            if (changeTypes != 0 && (changeTypes & ~TEXT_ONLY_CONTENT_CHANGE_MASK) == 0) {
+                // Text / content description / state description only (video time labels, counters): no node
+                // appears, disappears or moves, so the snap targets are unchanged.
+                if (stats) SnapNodeStats.eventsTextOnly++;
+                return;
+            }
+            contentGeneration.incrementAndGet();
+            if (stats) {
+                SnapNodeStats.eventsContent++;
+                SnapNodeStats.noteContentChangeTypes(changeTypes);
+            }
+        } else {
+            structuralGeneration.incrementAndGet();
+            if (stats) SnapNodeStats.eventsStructural++;
+        }
+        scheduleNodeChangePush();
     }
 
     @RequiresApi(api = Build.VERSION_CODES.N)
@@ -268,6 +984,7 @@ public class AccessibilityListener extends AccessibilityService {
                     || type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
                     || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
                 nodesDirty = true;
+                countNodeChangeEvent(accessibilityEvent, type);
             }
         }
         // try {
@@ -503,7 +1220,11 @@ public class AccessibilityListener extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         try {
+            ownPackageName = getPackageName();
+            SnapNodeStats.configure(this);
             serviceInstance = this;
+            // Listeners learn about the (re)connect without waiting for the next tree event.
+            scheduleNodeChangePush();
             mWindowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
 
             // Create texture view and disable accessibility on it first
@@ -713,6 +1434,8 @@ public class AccessibilityListener extends AccessibilityService {
         removeOverlay();
         removeAllOverlays();
         serviceInstance = null;
+        clearSnapshotNodeRefs();
+        scheduleNodeChangePush();
         // Null the remaining statics too: a stale WindowManager from a dead service
         // would make the next createOverlay attempt fail with a BadTokenException
         // instead of a clean "service not connected".
